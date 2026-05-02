@@ -28,6 +28,7 @@ import (
 //	GET    /sessions/{key}/state      state.json
 //	GET    /sessions/{key}/events     SSE proxy of upstream /events
 //	GET    /sessions/{key}/attach     WebSocket bridge to upstream /attach
+//	GET    /sessions/{key}/attach-raw HTTP/1.1 Upgrade pass-through (CLI)
 //	GET    /healthz                   liveness
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
@@ -53,6 +54,7 @@ func cmdServe(args []string) error {
 	register(mux, *prefix, "/sessions/{key}/state", srv.handleState)
 	register(mux, *prefix, "/sessions/{key}/events", srv.handleEvents)
 	register(mux, *prefix, "/sessions/{key}/attach", srv.handleAttach)
+	register(mux, *prefix, "/sessions/{key}/attach-raw", srv.handleAttachRaw)
 	register(mux, *prefix, "/healthz", srv.handleHealth)
 
 	fmt.Fprintf(os.Stderr, "supervise serve: listening on http://%s (state-dir=%s)\n", *bind, *stateDir)
