@@ -8,9 +8,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
+
+	"github.com/creack/pty"
 )
 
 // shortTempDir returns a temp dir path short enough for unix-socket
@@ -26,23 +27,29 @@ func shortTempDir(t *testing.T) string {
 	return dir
 }
 
-// fakePTY is a no-op PTY used in tests that don't care about
-// terminal I/O. LibghosttyPTY has its own test file.
-type fakePTY struct {
-	writes  [][]byte
-	mu      sync.Mutex
-	resized [2]uint16
+// newTestPTY opens a real PTY pair and wraps the master in a
+// LibghosttyPTY for tests that need a non-nil PTY but don't
+// otherwise exercise terminal I/O. The slave is closed when the
+// test ends.
+func newTestPTY(t *testing.T) *LibghosttyPTY {
+	t.Helper()
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatalf("pty.Open: %v", err)
+	}
+	p, err := NewLibghosttyPTY(master, 80, 24)
+	if err != nil {
+		_ = master.Close()
+		_ = slave.Close()
+		t.Fatalf("NewLibghosttyPTY: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = p.Close()
+		_ = master.Close()
+		_ = slave.Close()
+	})
+	return p
 }
-
-func (f *fakePTY) Write(data []byte) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.writes = append(f.writes, append([]byte{}, data...))
-	return nil
-}
-func (f *fakePTY) SendKeys(...string) error                { return nil }
-func (f *fakePTY) Capture(int, bool) (string, error)       { return "", nil }
-func (f *fakePTY) Resize(cols, rows uint16) error          { f.resized = [2]uint16{cols, rows}; return nil }
 
 // servicefunc lets tests write inline Service implementations.
 type serviceFunc func(ctx context.Context, super Supervisor) error
@@ -56,7 +63,7 @@ func (f serviceFunc) Run(ctx context.Context, super Supervisor) error { return f
 // rpc.sock returns the update.
 func TestRunnerRunsServiceAndSignalsCancellation(t *testing.T) {
 	dir := shortTempDir(t)
-	pty := &fakePTY{}
+	ptyImpl := newTestPTY(t)
 
 	svcStarted := make(chan struct{})
 	svcExited := make(chan error, 1)
@@ -75,7 +82,7 @@ func TestRunnerRunsServiceAndSignalsCancellation(t *testing.T) {
 		StateDir: dir,
 		Key:      "demo",
 		Service:  svc,
-		PTY:      pty,
+		PTY:      ptyImpl,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -134,10 +141,10 @@ func TestRunnerRejectsIncompleteConfig(t *testing.T) {
 		name string
 		cfg  SupervisorConfig
 	}{
-		{"no service", SupervisorConfig{StateDir: shortTempDir(t), Key: "k", PTY: &fakePTY{}}},
+		{"no service", SupervisorConfig{StateDir: shortTempDir(t), Key: "k", PTY: newTestPTY(t)}},
 		{"no pty", SupervisorConfig{StateDir: shortTempDir(t), Key: "k", Service: serviceFunc(func(context.Context, Supervisor) error { return nil })}},
-		{"no key", SupervisorConfig{StateDir: shortTempDir(t), Service: serviceFunc(func(context.Context, Supervisor) error { return nil }), PTY: &fakePTY{}}},
-		{"no state dir", SupervisorConfig{Key: "k", Service: serviceFunc(func(context.Context, Supervisor) error { return nil }), PTY: &fakePTY{}}},
+		{"no key", SupervisorConfig{StateDir: shortTempDir(t), Service: serviceFunc(func(context.Context, Supervisor) error { return nil }), PTY: newTestPTY(t)}},
+		{"no state dir", SupervisorConfig{Key: "k", Service: serviceFunc(func(context.Context, Supervisor) error { return nil }), PTY: newTestPTY(t)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

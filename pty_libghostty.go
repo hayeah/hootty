@@ -40,7 +40,6 @@ import (
 type LibghosttyPTY struct {
 	master *os.File
 	term   *libghostty.Terminal
-	keyEnc *libghostty.KeyEncoder
 
 	mu   sync.RWMutex
 	cols uint16
@@ -122,22 +121,15 @@ func NewLibghosttyPTY(master *os.File, cols, rows uint16, opts ...LibghosttyOpti
 	}
 	p.term = term
 
-	enc, err := libghostty.NewKeyEncoder()
-	if err != nil {
-		term.Close()
-		return nil, fmt.Errorf("new key encoder: %w", err)
-	}
-	p.keyEnc = enc
-
 	go p.dispatch()
 	go p.readLoop()
 	return p, nil
 }
 
 // Close stops the dispatcher: closes outstanding subscriber
-// channels, tears down the Terminal + KeyEncoder, and closes the
-// recorder if one was set. The master file is NOT closed here —
-// the caller owns it. Safe to call multiple times.
+// channels, tears down the Terminal, and closes the recorder if
+// one was set. The master file is NOT closed here — the caller
+// owns it. Safe to call multiple times.
 func (p *LibghosttyPTY) Close() error {
 	p.doneOnce.Do(func() {
 		shutdown := make(chan struct{})
@@ -150,10 +142,6 @@ func (p *LibghosttyPTY) Close() error {
 			if p.term != nil {
 				p.term.Close()
 				p.term = nil
-			}
-			if p.keyEnc != nil {
-				p.keyEnc.Close()
-				p.keyEnc = nil
 			}
 			if p.rec != nil {
 				_ = p.rec.Close()
@@ -253,51 +241,6 @@ func (p *LibghosttyPTY) readLoop() {
 func (p *LibghosttyPTY) Write(data []byte) error {
 	_, err := p.master.Write(data)
 	return err
-}
-
-// SendKeys translates tmux-style key names to encoded bytes via the
-// libghostty KeyEncoder (mode-aware: handles cursor-key app mode,
-// modifyOtherKeys, kitty-keyboard flags). Unknown names fall through
-// as literal bytes (matching tmux's "type the string" fallback).
-func (p *LibghosttyPTY) SendKeys(keys ...string) error {
-	for _, k := range keys {
-		keyCode, mods, known := keyNameToCode(k)
-		if !known {
-			if _, err := p.master.Write([]byte(k)); err != nil {
-				return err
-			}
-			continue
-		}
-		var encoded []byte
-		var encErr error
-		p.do(func() {
-			if p.term == nil || p.keyEnc == nil {
-				encErr = errors.New("pty closed")
-				return
-			}
-			ev, err := libghostty.NewKeyEvent()
-			if err != nil {
-				encErr = err
-				return
-			}
-			defer ev.Close()
-			ev.SetAction(libghostty.KeyActionPress)
-			ev.SetKey(keyCode)
-			ev.SetMods(mods)
-			p.keyEnc.SetOptFromTerminal(p.term)
-			encoded, encErr = p.keyEnc.Encode(ev)
-		})
-		if encErr != nil {
-			return fmt.Errorf("encode key %q: %w", k, encErr)
-		}
-		if len(encoded) == 0 {
-			continue
-		}
-		if _, err := p.master.Write(encoded); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // Capture returns a textual dump of the current screen. lines is
@@ -425,9 +368,8 @@ func (p *LibghosttyPTY) subscribe() (<-chan []byte, func()) {
 	return ch, cancel
 }
 
-// RegisterRoutes contributes /pty/{text,html,vt,stream,input,resize,
-// send-keys} to the supervisor's mux. Runner.Run invokes this
-// automatically if the configured PTY implements it.
+// RegisterRoutes contributes /pty/{text,html,vt,stream,input,resize}
+// to the supervisor's mux. Runner.Run invokes this automatically.
 func (p *LibghosttyPTY) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/pty/text", p.handleText)
 	mux.HandleFunc("/pty/html", p.handleHTML)
@@ -435,5 +377,4 @@ func (p *LibghosttyPTY) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/pty/stream", p.handleStream)
 	mux.HandleFunc("/pty/input", p.handleInput)
 	mux.HandleFunc("/pty/resize", p.handleResize)
-	mux.HandleFunc("/pty/send-keys", p.handleSendKeys)
 }

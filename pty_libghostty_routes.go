@@ -152,24 +152,3 @@ func (p *LibghosttyPTY) handleResize(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleSendKeys accepts JSON {keys: [...]} and dispatches each
-// through SendKeys. Unknown names flow as literal bytes (matching
-// tmux's behavior).
-func (p *LibghosttyPTY) handleSendKeys(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var body struct {
-		Keys []string `json:"keys"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "bad body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := p.SendKeys(body.Keys...); err != nil {
-		http.Error(w, "send keys: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
