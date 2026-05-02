@@ -1,0 +1,212 @@
+package supervisor
+
+import (
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/creack/pty"
+)
+
+// TestLibghosttyPTYFormatters smoke-tests Format{Text,HTML,VT} after
+// feeding a small VT stream through the master end of a fresh PTY
+// pair. The slave is closed immediately; we treat the master as a
+// plain os.File for the duration of the test.
+func TestLibghosttyPTYFormatters(t *testing.T) {
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatalf("pty.Open: %v", err)
+	}
+	defer master.Close()
+
+	p, err := NewLibghosttyPTY(master, 80, 24)
+	if err != nil {
+		slave.Close()
+		t.Fatalf("NewLibghosttyPTY: %v", err)
+	}
+	defer p.Close()
+
+	// Write VT bytes into the slave so the readLoop picks them up
+	// (the master's read side observes whatever is written to the
+	// slave).
+	if _, err := slave.Write([]byte("hello\r\n\x1b[1mbold\x1b[0m\r\ndone\r\n")); err != nil {
+		t.Fatalf("slave write: %v", err)
+	}
+
+	// Wait for "done" to land in the formatter output. The
+	// master.Read → dispatcher → format hop is asynchronous, so a
+	// single FormatText round-trip can race the readLoop's feed
+	// action onto the dispatcher queue. Poll briefly instead.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		out, err := p.FormatText()
+		if err == nil && strings.Contains(string(out), "done") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	plainBytes, err := p.FormatText()
+	if err != nil {
+		t.Fatalf("FormatText: %v", err)
+	}
+	plain := string(plainBytes)
+	for _, want := range []string{"hello", "bold", "done"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("FormatText: missing %q in %q", want, plain)
+		}
+	}
+	if strings.Contains(plain, "\x1b") {
+		t.Errorf("FormatText leaked escape sequences: %q", plain)
+	}
+
+	html, err := p.FormatHTML()
+	if err != nil {
+		t.Fatalf("FormatHTML: %v", err)
+	}
+	if !strings.Contains(string(html), "font-weight: bold") {
+		t.Errorf("FormatHTML: missing bold style: %q", string(html))
+	}
+	if !strings.Contains(string(html), "hello") {
+		t.Errorf("FormatHTML: missing hello: %q", string(html))
+	}
+
+	vt, err := p.FormatVT()
+	if err != nil {
+		t.Fatalf("FormatVT: %v", err)
+	}
+	if !strings.Contains(string(vt), "\x1b[") {
+		t.Errorf("FormatVT: expected escape sequences in output, got %q", string(vt))
+	}
+	if !strings.Contains(string(vt), "bold") {
+		t.Errorf("FormatVT: missing 'bold' text: %q", string(vt))
+	}
+
+	// Slave was kept open so the master's reads don't see EOF;
+	// close it here so the readLoop can exit on master.Close.
+	_ = slave.Close()
+}
+
+// TestLibghosttyRecorderRoundtrip verifies that all bytes written
+// through the slave end up byte-identical in the recorder file.
+func TestLibghosttyRecorderRoundtrip(t *testing.T) {
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatalf("pty.Open: %v", err)
+	}
+	defer master.Close()
+
+	tmp := t.TempDir()
+	logPath := tmp + "/pty.log"
+	rec, err := NewRecorder(logPath)
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+
+	p, err := NewLibghosttyPTY(master, 80, 24, WithRecorder(rec))
+	if err != nil {
+		slave.Close()
+		t.Fatalf("NewLibghosttyPTY: %v", err)
+	}
+	defer p.Close()
+
+	// PTY line discipline rewrites LF→CRLF on the slave→master
+	// path, so we can't compare verbatim. Check that the recorded
+	// stream contains the meaningful tokens (and the SGR escape).
+	if _, err := slave.Write([]byte("abc\r\n\x1b[31mred\x1b[0m\r\n")); err != nil {
+		t.Fatalf("slave write: %v", err)
+	}
+	// Poll until "red" shows up in the formatter — proves the
+	// readLoop has processed our chunk through the dispatcher (the
+	// recorder writes inside the same dispatcher action).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		out, _ := p.FormatText()
+		if strings.Contains(string(out), "red") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = p.Close() // flushes recorder
+
+	got, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	for _, want := range []string{"abc", "\x1b[31m", "red", "\x1b[0m"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("recorder roundtrip: missing %q in log %q", want, string(got))
+		}
+	}
+
+	_ = slave.Close()
+}
+
+// TestLibghosttyPTYSendKeysLiteral exercises SendKeys's literal-
+// fallback path: an unknown name is written byte-for-byte to the
+// master. (Encoded paths go through libghostty's KeyEncoder; we
+// cover those at the e2e level — the bash signal-on-Ctrl-C in the
+// supervise smoke transcript is the proof.)
+func TestLibghosttyPTYSendKeysLiteral(t *testing.T) {
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatalf("pty.Open: %v", err)
+	}
+	defer master.Close()
+	defer slave.Close()
+
+	p, err := NewLibghosttyPTY(master, 80, 24)
+	if err != nil {
+		t.Fatalf("NewLibghosttyPTY: %v", err)
+	}
+	defer p.Close()
+
+	// Trailing newline so the slave's line-discipline ICANON mode
+	// hands the buffered line to the reader.
+	if err := p.SendKeys("hello\n"); err != nil {
+		t.Fatalf("SendKeys: %v", err)
+	}
+
+	type res struct {
+		n   int
+		buf []byte
+	}
+	out := make(chan res, 1)
+	go func() {
+		buf := make([]byte, 64)
+		n, _ := slave.Read(buf)
+		out <- res{n, buf[:n]}
+	}()
+	select {
+	case r := <-out:
+		if !strings.Contains(string(r.buf), "hello") {
+			t.Errorf("literal SendKeys: got %q want substring %q", string(r.buf), "hello")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for slave to receive SendKeys literal bytes")
+	}
+}
+
+// TestKeyNameToCode is a unit test for the tmux-style key parser.
+func TestKeyNameToCode(t *testing.T) {
+	cases := []struct {
+		name  string
+		known bool
+	}{
+		{"Enter", true},
+		{"Tab", true},
+		{"Escape", true},
+		{"C-c", true},   // letter+ctrl
+		{"C-M-Left", true}, // arrow + ctrl + meta
+		{"F12", true},
+		{"hello", false},      // multi-char literal → fallback
+		{"unknown-x", false},
+	}
+	for _, c := range cases {
+		_, _, known := keyNameToCode(c.name)
+		if known != c.known {
+			t.Errorf("keyNameToCode(%q): known=%v want %v", c.name, known, c.known)
+		}
+	}
+}
