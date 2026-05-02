@@ -28,18 +28,18 @@ import (
 //	GET    /sessions/{key}/state      state.json
 //	GET    /sessions/{key}/events     SSE proxy of upstream /events
 //	GET    /sessions/{key}/attach     WebSocket bridge to upstream /attach
+//	GET    /sessions/{key}/attach-raw HTTP/1.1 Upgrade pass-through (CLI)
 //	GET    /healthz                   liveness
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	port := fs.Int("port", 0, "TCP port to listen on (0 = pick one)")
-	addr := fs.String("addr", "127.0.0.1", "interface to bind")
+	bind := fs.String("bind", "", `listen address in Go net.Listen form (e.g. "127.0.0.1:20000", ":20000", "[::1]:20000")`)
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
 	prefix := fs.String("prefix", "", `optional path prefix (e.g. "/api"); routes are mounted at both bare and prefixed paths`)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *port == 0 {
-		return fmt.Errorf("--port is required")
+	if *bind == "" {
+		return fmt.Errorf("--bind is required (e.g. --bind 127.0.0.1:20000)")
 	}
 	if err := os.MkdirAll(*stateDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir state-dir: %w", err)
@@ -54,11 +54,11 @@ func cmdServe(args []string) error {
 	register(mux, *prefix, "/sessions/{key}/state", srv.handleState)
 	register(mux, *prefix, "/sessions/{key}/events", srv.handleEvents)
 	register(mux, *prefix, "/sessions/{key}/attach", srv.handleAttach)
+	register(mux, *prefix, "/sessions/{key}/attach-raw", srv.handleAttachRaw)
 	register(mux, *prefix, "/healthz", srv.handleHealth)
 
-	listenAddr := fmt.Sprintf("%s:%d", *addr, *port)
-	fmt.Fprintf(os.Stderr, "supervise serve: listening on http://%s (state-dir=%s)\n", listenAddr, *stateDir)
-	return http.ListenAndServe(listenAddr, mux)
+	fmt.Fprintf(os.Stderr, "supervise serve: listening on http://%s (state-dir=%s)\n", *bind, *stateDir)
+	return http.ListenAndServe(*bind, mux)
 }
 
 // register mounts a handler at the bare path and (if prefix is

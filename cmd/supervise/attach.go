@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,10 +11,15 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	"golang.org/x/term"
 
@@ -21,35 +27,55 @@ import (
 	"github.com/hayeah/supervisor/internal/attachwire"
 )
 
-// cmdAttach implements `supervise attach`. It dials rpc.sock,
-// upgrades the connection into the attach binary protocol, puts the
-// local terminal into raw mode, and ferries bytes between local
-// stdio and the supervisor's PTY master.
+// cmdAttach implements `supervise attach`. Two transports:
 //
-// Exit codes (per spec):
+//   - Local (default): dials <state-dir>/<key>/rpc.sock and performs
+//     the supervise-attach/1 HTTP/1.1 Upgrade.
+//   - Remote (`--host`): dials a `supervise serve` host over TCP (or
+//     TLS if the URL scheme is https://) and performs the same
+//     Upgrade against /sessions/<id>/attach-raw. Server resolves the
+//     short-id; the client passes its raw user-typed argument.
 //
-//	0   clean detach (server EOF after normal child exit, or
-//	    user-initiated detach via <prefix>d)
-//	1   protocol error, dial failure, bad state dir
-//	2   argument error (no session matched, ambiguous prefix,
-//	    bad --prefix-key)
-//	130 terminated by signal we trapped (SIGINT)
+// The remote path supports automatic reconnect (default; `--no-reconnect`
+// to opt out). Termios stays raw across drops; on reconnect the client
+// sends a fresh Hello with current local cols/rows, which triggers a
+// full-replay (or snapshot if `--no-full-replay`) and repaints.
+//
+// Exit codes:
+//
+//	0   clean detach (server EOF after normal child exit, <prefix>d,
+//	    or remote drop with --no-reconnect)
+//	1   protocol error, dial failure on first connect, bad state dir
+//	2   argument error (no session matched, ambiguous prefix, bad
+//	    --prefix-key, --host parse error)
+//	130 terminated by a trapped signal (SIGINT/SIGTERM/SIGHUP)
 func cmdAttach(args []string) int {
 	fs := flag.NewFlagSet("attach", flag.ContinueOnError)
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `usage: supervise attach [flags] <id-or-prefix>
 
-  --state-dir <dir>      session state directory (default: ~/.supervise)
+  --host <addr>          remote `+"`supervise serve`"+` host: bare host:port,
+                         http://host:port, or https://host:port
+  --state-dir <dir>      session state directory (default: ~/.supervise);
+                         only used for local attach (no --host)
   --no-full-replay       send a libghostty snapshot instead of streaming pty.log
+  --no-reconnect         exit on first drop instead of auto-reconnecting
+                         (--host only; ignored for local attach)
   --prefix-key <key>     command prefix byte (default: C-b). Forms: C-b, ^b,
                          0x02, or a single ASCII control byte.
 
 Inside an attach: <prefix>d detaches; <prefix><prefix> sends a literal
 prefix byte to the remote; <prefix>? prints help.
+
+During a remote disconnect: backoff is 1,2,4,8,16,30s capped at 30s and
+retries forever. Press any key to wake the backoff and retry now.
+<prefix>d still detaches cleanly.
 `)
 	}
+	host := fs.String("host", "", "remote `supervise serve` host (host:port or URL)")
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
 	noFullReplay := fs.Bool("no-full-replay", false, "send a libghostty snapshot instead of streaming pty.log")
+	noReconnect := fs.Bool("no-reconnect", false, "exit on first drop instead of auto-reconnecting (--host only)")
 	prefixSpec := fs.String("prefix-key", "C-b", "command prefix byte (e.g. C-b, ^a, 0x1c)")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -66,105 +92,55 @@ prefix byte to the remote; <prefix>? prints help.
 		return 2
 	}
 
-	store := supervisor.NewStore(*stateDir)
-	state, err := store.Resolve(rest[0])
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "supervise attach: %v\n", err)
-		return 2
-	}
-
-	sockPath := filepath.Join(*stateDir, state.Supervisor.Key, "rpc.sock")
 	replayMode := "full"
 	if *noFullReplay {
 		replayMode = "snapshot"
 	}
 
-	exitCode, err := runAttach(sockPath, prefixByte, replayMode)
+	var dial dialFn
+	var reconnect bool
+	if *host != "" {
+		base, err := parseHostFlag(*host)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "supervise attach: %v\n", err)
+			return 2
+		}
+		dial = remoteDialer(base, rest[0])
+		reconnect = !*noReconnect
+	} else {
+		store := supervisor.NewStore(*stateDir)
+		state, err := store.Resolve(rest[0])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "supervise attach: %v\n", err)
+			return 2
+		}
+		sockPath := filepath.Join(*stateDir, state.Supervisor.Key, "rpc.sock")
+		dial = localDialer(sockPath)
+	}
+
+	exitCode, err := runAttachLoop(dial, prefixByte, replayMode, reconnect)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "supervise attach: %v\n", err)
 	}
 	return exitCode
 }
 
-// runAttach is the meat of `supervise attach`. Returns (exitCode,
-// err). On clean detach exitCode=0 err=nil. On signal trap
-// exitCode=130. On dial / protocol error exitCode=1.
-func runAttach(sockPath string, prefixByte byte, replayMode string) (int, error) {
-	conn, err := net.Dial("unix", sockPath)
-	if err != nil {
-		// Long-path fallback: bind a relative path by chdir'ing into
-		// the state dir, same trick the server uses.
-		if relConn, relErr := dialUnixRelative(sockPath); relErr == nil {
-			conn = relConn
-			err = nil
-		}
-		if err != nil {
-			return 1, fmt.Errorf("dial %s: %w", sockPath, err)
-		}
-	}
-	defer conn.Close()
+// dialFn returns a connection that has already completed the
+// supervise-attach/1 HTTP/1.1 Upgrade handshake — i.e. ready for
+// attachwire frames in both directions.
+type dialFn func(ctx context.Context) (net.Conn, error)
 
-	bufrw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
-
-	// Send the HTTP/1.1 Upgrade request.
-	req, err := http.NewRequest(http.MethodGet, "http://supervise/attach", nil)
-	if err != nil {
-		return 1, fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Upgrade", "supervise-attach/1")
-	req.Header.Set("Connection", "Upgrade")
-	if err := req.Write(bufrw); err != nil {
-		return 1, fmt.Errorf("write upgrade: %w", err)
-	}
-	if err := bufrw.Flush(); err != nil {
-		return 1, fmt.Errorf("flush upgrade: %w", err)
-	}
-
-	// Read the response. Anything other than 101 is a setup error;
-	// print body to stderr and return code 1.
-	resp, err := http.ReadResponse(bufrw.Reader, req)
-	if err != nil {
-		return 1, fmt.Errorf("read upgrade response: %w", err)
-	}
-	if resp.StatusCode != http.StatusSwitchingProtocols {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return 1, fmt.Errorf("server refused upgrade: %s\n%s", resp.Status, string(body))
-	}
-	resp.Body.Close()
-
-	// Determine local size. Default to 80x24 if stdin isn't a tty
-	// (which is fine for scripted/expect-driven attaches).
-	cols, rows := uint16(80), uint16(24)
-	if term.IsTerminal(int(os.Stdin.Fd())) {
-		c, r, err := term.GetSize(int(os.Stdin.Fd()))
-		if err == nil && c > 0 && r > 0 {
-			cols, rows = uint16(c), uint16(r)
-		}
-	}
-
-	// Raw mode if stdin is a tty. Top-level defer Restore so a panic
-	// at any depth still bubbles through.
-	var oldState *term.State
-	if term.IsTerminal(int(os.Stdin.Fd())) {
-		oldState, err = term.MakeRaw(int(os.Stdin.Fd()))
-		if err != nil {
-			return 1, fmt.Errorf("term.MakeRaw: %w", err)
-		}
-		defer func() {
-			_ = term.Restore(int(os.Stdin.Fd()), oldState)
-			// Belt-and-suspenders for a child that left altscreen on
-			// or hid the cursor or set weird SGR.
-			_, _ = os.Stderr.Write([]byte("\x1b[?1049l\x1b[?25h\x1b[0m"))
-		}()
-	}
-
+// runAttachLoop is the top-level driver. It owns termios, signal
+// traps, the stdin reader and SIGWINCH watcher; everything below
+// re-runs per attempt across reconnects.
+//
+// Returns the process exit code and an optional error to print.
+func runAttachLoop(dial dialFn, prefixByte byte, replayMode string, reconnect bool) (int, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Signal trap. In raw mode Ctrl-C is just a byte forwarded to the
+	// Signal trap. Raw-mode Ctrl-C is just a byte forwarded to the
 	// remote, so SIGINT here is from `kill -INT` not the keyboard.
-	// SIGTERM/SIGHUP come from pkill / parent dying / terminal close.
 	sigCh := make(chan os.Signal, 4)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(sigCh)
@@ -178,46 +154,37 @@ func runAttach(sockPath string, prefixByte byte, replayMode string) (int, error)
 		}
 	}()
 
-	// Single-writer goroutine for outbound frames so Hello / Input /
-	// Size never interleave bytes mid-frame.
-	type outMsg struct {
-		typ     byte
-		payload []byte
-	}
-	outCh := make(chan outMsg, 256)
-	writerDone := make(chan error, 1)
-	go func() {
-		var werr error
-		for m := range outCh {
-			if err := attachwire.WriteFrame(conn, m.typ, m.payload); err != nil {
-				werr = err
-				break
-			}
+	// Termios raw if stdin is a tty. Set once; stays raw across
+	// reconnects so we don't flicker between drops.
+	var oldState *term.State
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		var err error
+		oldState, err = term.MakeRaw(int(os.Stdin.Fd()))
+		if err != nil {
+			return 1, fmt.Errorf("term.MakeRaw: %w", err)
 		}
-		writerDone <- werr
-	}()
-	send := func(typ byte, payload []byte) bool {
-		select {
-		case outCh <- outMsg{typ, payload}:
-			return true
-		case <-ctx.Done():
-			return false
-		}
+		defer func() {
+			_ = term.Restore(int(os.Stdin.Fd()), oldState)
+			// Belt-and-suspenders for a child that left altscreen on
+			// or hid the cursor or set weird SGR.
+			_, _ = os.Stderr.Write([]byte("\x1b[?1049l\x1b[?25h\x1b[0m"))
+		}()
 	}
 
-	// Send Hello.
-	helloPayload, _ := json.Marshal(attachwire.Hello{
-		Cols:       cols,
-		Rows:       rows,
-		ReplayMode: replayMode,
-	})
-	if !send(attachwire.MsgHello, helloPayload) {
-		return 1, errors.New("ctx cancelled before Hello")
+	// Initial size; SIGWINCH updates it.
+	cols, rows := localOrDefaultSize()
+	var size atomic.Uint64
+	size.Store(packSize(cols, rows))
+
+	// Shared connection state. The stdin and SIGWINCH goroutines see
+	// the *current* session's send func via this; if no session,
+	// inputs are dropped and a wake is signaled.
+	shared := &sharedSession{
+		wake: make(chan struct{}, 1),
 	}
 
-	// SIGWINCH: re-read local size, send Size{cols,rows}. Coalesce —
-	// if a second SIGWINCH arrives while we're still preparing the
-	// first, we just send the latest size.
+	// SIGWINCH watcher: re-reads size, updates atomic, sends a Size
+	// frame to the current session (if connected). Coalesces.
 	winchCh := make(chan os.Signal, 1)
 	signal.Notify(winchCh, syscall.SIGWINCH)
 	defer signal.Stop(winchCh)
@@ -234,81 +201,222 @@ func runAttach(sockPath string, prefixByte byte, replayMode string) (int, error)
 					}
 				}
 			sendIt:
-				c, r, err := term.GetSize(int(os.Stdin.Fd()))
-				if err != nil || c == 0 || r == 0 {
-					continue
-				}
-				payload, _ := json.Marshal(attachwire.Size{Cols: uint16(c), Rows: uint16(r)})
-				if !send(attachwire.MsgSize, payload) {
-					return
-				}
+				c, r := localOrDefaultSize()
+				size.Store(packSize(c, r))
+				payload, _ := json.Marshal(attachwire.Size{Cols: c, Rows: r})
+				shared.sendIfConnected(attachwire.MsgSize, payload)
 			case <-ctx.Done():
 				return
 			}
 		}
 	}()
 
-	// stdin → server, with prefix-key state machine. We do NOT
-	// terminate the attach on stdin EOF (the user may have piped
-	// finite input but still want to watch live output). Detach is
-	// server EOF / ctx cancel / <prefix>d only.
-	stdinDone := make(chan error, 1)
+	// Stdin reader + prefix-key FSM. Runs once across all reconnects.
+	stdinDone := make(chan struct{})
 	go func() {
-		err := runStdinLoop(ctx, prefixByte, send, cancel)
-		stdinDone <- err
+		defer close(stdinDone)
+		runStdinFSM(ctx, prefixByte, shared, cancel)
 	}()
 
-	// server → stdout. This goroutine reads framed messages and
-	// dispatches Output/Size. Returns when the server closes the
-	// connection (clean detach: server EOF) or hits a protocol
-	// error.
-	serverDone := make(chan error, 1)
-	go func() {
-		serverDone <- runServerLoop(ctx, bufrw.Reader)
-	}()
+	// Reconnect loop.
+	loopErr := runConnectLoop(ctx, dial, replayMode, reconnect, &size, shared)
 
-	// Wait for any of: server EOF, ctx cancel (signal trap or
-	// <prefix>d from stdin loop). Stdin EOF alone does not detach.
-	var loopErr error
-	select {
-	case err := <-serverDone:
-		loopErr = err
-	case <-ctx.Done():
-	}
-
-	// Tear down the conn so the other goroutines unblock.
-	cancel()
-	_ = conn.Close()
-	close(outCh)
-	<-writerDone
-
-	// Drain remaining goroutines best-effort. They'll bail on closed
-	// conn / ctx.
-	select {
-	case <-serverDone:
-	default:
-	}
-	select {
-	case <-stdinDone:
-	default:
-	}
-
-	// Determine exit code.
+	// Determine exit code from outer signals.
 	select {
 	case <-signaled:
 		return 130, nil
 	default:
 	}
-	if loopErr != nil && !errors.Is(loopErr, io.EOF) && !errors.Is(loopErr, net.ErrClosed) {
+	if loopErr != nil {
+		var hee *httpErrExit2
+		if errors.As(loopErr, &hee) {
+			fmt.Fprintln(os.Stderr, "supervise attach: "+hee.msg)
+			return 2, nil
+		}
 		return 1, loopErr
 	}
 	return 0, nil
 }
 
-// runStdinLoop reads stdin one byte at a time and runs the prefix-key
-// state machine. Returns when stdin EOFs, ctx cancels, or the user
-// types <prefix>d (cancel is invoked then, ctx fires next iteration).
-func runStdinLoop(ctx context.Context, prefix byte, send func(byte, []byte) bool, cancel context.CancelFunc) error {
+// runConnectLoop runs the connect→session→drop→reconnect FSM. It
+// returns when:
+//
+//   - ctx is cancelled (user detach via <prefix>d, signal, etc.)
+//   - the session ends cleanly (server EOF) → return nil
+//   - reconnect is disabled and a drop or first-connect error occurs
+//   - first connect fails (we always fail-fast on the first attempt
+//     even with reconnect=true; a typo'd host should error in a beat)
+func runConnectLoop(
+	ctx context.Context,
+	dial dialFn,
+	replayMode string,
+	reconnect bool,
+	size *atomic.Uint64,
+	shared *sharedSession,
+) error {
+	gotConnectedOnce := false
+	for {
+		// Dial.
+		conn, err := dial(ctx)
+		if err != nil {
+			// User cancelled (e.g. <prefix>d before we connected, or
+			// SIGINT during dial). Clean exit, not error.
+			if ctx.Err() != nil {
+				return nil
+			}
+			// Sentinel server-side resolution errors: surface and exit 2.
+			var hee *httpErrExit2
+			if errors.As(err, &hee) {
+				return hee
+			}
+			if !gotConnectedOnce {
+				// First-connect failure: fail-fast.
+				return err
+			}
+			// Mid-stream drop, retry path: backoff (with keystroke wake).
+			if !reconnect {
+				return err
+			}
+			if !waitBackoff(ctx, shared, "redial failed") {
+				return nil // ctx cancelled during backoff = clean detach
+			}
+			continue
+		}
+
+		// Connected. Reset backoff and send Hello with current size.
+		shared.resetTier()
+		c, r := unpackSize(size.Load())
+		err = runSession(ctx, conn, c, r, replayMode, shared)
+		_ = conn.Close()
+
+		if ctx.Err() != nil {
+			// User detach / signal — clean exit regardless of err.
+			return nil
+		}
+		gotConnectedOnce = true
+		if !reconnect {
+			// In non-reconnect mode, treat EOF / closed as clean
+			// detach (matches local-socket "child exited" semantics).
+			if err == nil || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return err
+		}
+		// Reconnect mode: ANY conn termination (including EOF from a
+		// bridge dying mid-stream) is a drop we should retry. If the
+		// session is genuinely gone, the next dial returns 404 and we
+		// surface exit 2.
+		// Drop. Print disconnected line; wait for backoff.
+		fmt.Fprintf(os.Stderr,
+			"\r\n\x1b[2m[supervise: disconnected: %v]\x1b[0m\r\n", err)
+		if !waitBackoff(ctx, shared, "") {
+			return nil // ctx cancelled during backoff = clean detach
+		}
+		// Drain any pending wake before redial so the new connection
+		// doesn't see a stale wake.
+		select {
+		case <-shared.wake:
+		default:
+		}
+	}
+}
+
+// runSession runs a single connected session over conn. Owns the
+// per-session writer goroutine and server-read loop. Sends the Hello
+// frame as the first thing on the wire. Returns nil on clean server
+// EOF, an error otherwise.
+func runSession(
+	ctx context.Context,
+	conn net.Conn,
+	cols, rows uint16,
+	replayMode string,
+	shared *sharedSession,
+) error {
+	sessionCtx, sessionCancel := context.WithCancel(ctx)
+	defer sessionCancel()
+
+	type outMsg struct {
+		typ     byte
+		payload []byte
+	}
+	outCh := make(chan outMsg, 256)
+	writerDone := make(chan error, 1)
+	go func() {
+		var werr error
+		for m := range outCh {
+			if err := attachwire.WriteFrame(conn, m.typ, m.payload); err != nil {
+				werr = err
+				break
+			}
+		}
+		writerDone <- werr
+	}()
+
+	send := func(typ byte, payload []byte) bool {
+		select {
+		case outCh <- outMsg{typ, payload}:
+			return true
+		case <-sessionCtx.Done():
+			return false
+		}
+	}
+
+	// Wire send into the shared bus *before* Hello so Size frames
+	// from a SIGWINCH that fired between connect and Hello aren't
+	// lost. (Order doesn't matter as long as Hello goes first; our
+	// channel buffers up to 256 so an early Size queues behind.)
+	shared.setSend(send)
+	defer shared.clearSend()
+
+	// Hello.
+	helloPayload, _ := json.Marshal(attachwire.Hello{
+		Cols:       cols,
+		Rows:       rows,
+		ReplayMode: replayMode,
+	})
+	if !send(attachwire.MsgHello, helloPayload) {
+		return errors.New("ctx cancelled before Hello")
+	}
+
+	// Server-read loop (in this goroutine, since we own the lifetime).
+	r := bufio.NewReader(conn)
+	serverDone := make(chan error, 1)
+	go func() {
+		serverDone <- runServerLoop(sessionCtx, r)
+	}()
+
+	// Wait for either side to finish.
+	var sessErr error
+	select {
+	case err := <-serverDone:
+		sessErr = err
+	case <-ctx.Done():
+		// Outer cancel; tear down.
+	}
+
+	sessionCancel()
+	_ = conn.Close()
+	close(outCh)
+	<-writerDone
+	// Drain serverDone if it hasn't fired yet.
+	select {
+	case <-serverDone:
+	default:
+	}
+
+	// EOF / closed conn are not nil-ed out here — runConnectLoop
+	// decides per the reconnect flag (mid-stream bridge death looks
+	// like EOF on the TCP side, but in reconnect=false mode we still
+	// want to treat it as a clean detach for backwards compat with
+	// the local-socket path's "child exited → supervisor closed" semantics).
+	return sessErr
+}
+
+// runStdinFSM reads stdin one byte at a time and runs the prefix-key
+// state machine. When connected, byte events are forwarded as
+// MsgInput frames; when disconnected, they're dropped silently and
+// signal a reconnect-wake. <prefix>d cancels the outer ctx.
+func runStdinFSM(ctx context.Context, prefix byte, shared *sharedSession, cancel context.CancelFunc) {
 	type readResult struct {
 		b   byte
 		err error
@@ -329,17 +437,17 @@ func runStdinLoop(ctx context.Context, prefix byte, send func(byte, []byte) bool
 	}()
 
 	const (
-		stateNormal     = 0
-		stateAfterPref  = 1
+		stateNormal    = 0
+		stateAfterPref = 1
 	)
 	state := stateNormal
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
+			return
 		case rr := <-readCh:
 			if rr.err != nil {
-				return rr.err
+				return
 			}
 			b := rr.b
 			switch state {
@@ -348,23 +456,21 @@ func runStdinLoop(ctx context.Context, prefix byte, send func(byte, []byte) bool
 					state = stateAfterPref
 					continue
 				}
-				if !send(attachwire.MsgInput, []byte{b}) {
-					return nil
-				}
+				shared.sendInputOrWake(b)
 			case stateAfterPref:
 				switch b {
 				case prefix:
-					if !send(attachwire.MsgInput, []byte{prefix}) {
-						return nil
-					}
+					// Literal prefix: send if connected, drop if not
+					// (no wake — this is data, not a "user is here" signal).
+					shared.sendIfConnected(attachwire.MsgInput, []byte{prefix})
 				case 'd':
 					cancel()
-					return nil
+					return
 				case '?':
 					fmt.Fprintln(os.Stderr,
 						"\r\nsupervise attach: <prefix>d=detach, <prefix><prefix>=literal, <prefix>?=help\r")
 				default:
-					// silent ignore (tmux beeps; we don't)
+					// silent ignore
 				}
 				state = stateNormal
 			}
@@ -409,6 +515,277 @@ func runServerLoop(ctx context.Context, r *bufio.Reader) error {
 	}
 }
 
+// sharedSession is the cross-goroutine bus connecting the stdin/
+// SIGWINCH/wake machinery to the *current* connection's writer.
+// When sendFn is nil, the session is disconnected and inputs are
+// dropped (with a wake signal for stdin events).
+type sharedSession struct {
+	mu     sync.Mutex
+	sendFn func(typ byte, payload []byte) bool
+	wake   chan struct{}
+	tier   atomic.Int32 // current backoff tier; 0 = first retry == 1s
+}
+
+func (s *sharedSession) setSend(fn func(byte, []byte) bool) {
+	s.mu.Lock()
+	s.sendFn = fn
+	s.mu.Unlock()
+}
+
+func (s *sharedSession) clearSend() {
+	s.mu.Lock()
+	s.sendFn = nil
+	s.mu.Unlock()
+}
+
+// sendInputOrWake: if connected, forward the byte as MsgInput; if
+// not, drop and signal a wake (the user is at the keyboard, retry now).
+func (s *sharedSession) sendInputOrWake(b byte) {
+	s.mu.Lock()
+	fn := s.sendFn
+	s.mu.Unlock()
+	if fn != nil {
+		fn(attachwire.MsgInput, []byte{b})
+		return
+	}
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+}
+
+// sendIfConnected sends the frame if a session exists; otherwise drops
+// it without waking (used for SIGWINCH and literal-prefix bytes).
+func (s *sharedSession) sendIfConnected(typ byte, payload []byte) {
+	s.mu.Lock()
+	fn := s.sendFn
+	s.mu.Unlock()
+	if fn != nil {
+		fn(typ, payload)
+	}
+}
+
+// waitBackoff sleeps for the next backoff tier (capped at 30s),
+// rewriting the disconnect-status line in place each second so the
+// user sees the countdown advance. Returns true on timer expiry,
+// false if ctx cancels. A keystroke on shared.wake also returns true
+// (immediate redial).
+//
+// State is held in a method-local closure: each call advances the
+// schedule one tier. Reset by exiting waitBackoff after a successful
+// connect (caller drains shared.wake).
+var backoffSchedule = []time.Duration{
+	1 * time.Second,
+	2 * time.Second,
+	4 * time.Second,
+	8 * time.Second,
+	16 * time.Second,
+	30 * time.Second,
+}
+
+// backoffTier is incremented by waitBackoff; reset to 0 on success.
+// Stored on the shared session so it persists across calls.
+func waitBackoff(ctx context.Context, shared *sharedSession, _ string) bool {
+	tier := int(shared.tier.Add(1) - 1)
+	if tier >= len(backoffSchedule) {
+		tier = len(backoffSchedule) - 1
+	}
+	d := backoffSchedule[tier]
+	deadline := time.Now().Add(d)
+	for {
+		remain := time.Until(deadline)
+		if remain <= 0 {
+			return true
+		}
+		// Print/refresh the status line in place.
+		secs := int((remain + time.Second - 1) / time.Second)
+		fmt.Fprintf(os.Stderr,
+			"\r\x1b[2K\x1b[2m[supervise: reconnecting in %ds — press any key to retry now]\x1b[0m",
+			secs)
+		// Sleep up to 1s so we can refresh the countdown.
+		step := time.Second
+		if remain < step {
+			step = remain
+		}
+		select {
+		case <-ctx.Done():
+			fmt.Fprint(os.Stderr, "\r\x1b[2K")
+			return false
+		case <-shared.wake:
+			fmt.Fprint(os.Stderr, "\r\x1b[2K")
+			return true
+		case <-time.After(step):
+		}
+	}
+}
+
+// resetTier zeroes the backoff schedule. Called after each successful
+// session connect.
+func (s *sharedSession) resetTier() { s.tier.Store(0) }
+
+// httpErrExit2 is the dialer's sentinel for server-side resolve
+// errors (404 no-match, 409 ambiguous). The connect loop maps it to
+// exit code 2.
+type httpErrExit2 struct {
+	msg string
+}
+
+func (e *httpErrExit2) Error() string { return e.msg }
+
+// localDialer returns a dialFn for the local rpc.sock case.
+func localDialer(sockPath string) dialFn {
+	return func(ctx context.Context) (net.Conn, error) {
+		conn, err := dialUnixSock(ctx, sockPath)
+		if err != nil {
+			return nil, err
+		}
+		if err := upgradeAttachConn(conn, "http://supervise/attach"); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		return conn, nil
+	}
+}
+
+// remoteDialer returns a dialFn for the --host case. base is the
+// already-parsed http(s)://host:port URL; shortID is the user-typed
+// argument passed verbatim to the server for resolution.
+func remoteDialer(base *url.URL, shortID string) dialFn {
+	return func(ctx context.Context) (net.Conn, error) {
+		hostport := base.Host
+		var conn net.Conn
+		var err error
+		switch base.Scheme {
+		case "http":
+			var d net.Dialer
+			conn, err = d.DialContext(ctx, "tcp", hostport)
+		case "https":
+			d := &tls.Dialer{
+				Config: &tls.Config{ServerName: hostFromHostport(hostport)},
+			}
+			conn, err = d.DialContext(ctx, "tcp", hostport)
+		default:
+			return nil, fmt.Errorf("unsupported scheme %q", base.Scheme)
+		}
+		if err != nil {
+			return nil, err
+		}
+		target := *base
+		target.Path = "/sessions/" + shortID + "/attach-raw"
+		if err := upgradeAttachConn(conn, target.String()); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		return conn, nil
+	}
+}
+
+// upgradeAttachConn writes the supervise-attach/1 HTTP/1.1 Upgrade
+// request to conn and reads the response. On 101 the conn is left
+// positioned at the first attachwire byte. On 404 / 409 returns a
+// *httpErrExit2 sentinel; on other non-101 returns a generic error.
+func upgradeAttachConn(conn net.Conn, urlStr string) error {
+	bufrw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
+	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Upgrade", "supervise-attach/1")
+	req.Header.Set("Connection", "Upgrade")
+	if err := req.Write(bufrw); err != nil {
+		return fmt.Errorf("write upgrade: %w", err)
+	}
+	if err := bufrw.Flush(); err != nil {
+		return fmt.Errorf("flush upgrade: %w", err)
+	}
+	resp, err := http.ReadResponse(bufrw.Reader, req)
+	if err != nil {
+		return fmt.Errorf("read upgrade response: %w", err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusSwitchingProtocols:
+		// Hand back any bytes the bufio reader may have over-read.
+		// We can't easily push them back into conn; instead, callers
+		// of this function must use a fresh bufio.Reader on conn for
+		// frame parsing. Since attachwire is server-initiated after
+		// the upgrade, in practice bufrw.Reader has 0 buffered bytes
+		// here. (We assert this via Buffered().)
+		if n := bufrw.Reader.Buffered(); n > 0 {
+			return fmt.Errorf("internal: %d bytes buffered after upgrade response", n)
+		}
+		return nil
+	case http.StatusNotFound:
+		body, _ := io.ReadAll(resp.Body)
+		return &httpErrExit2{msg: strings.TrimSpace(string(body))}
+	case http.StatusConflict:
+		body, _ := io.ReadAll(resp.Body)
+		return &httpErrExit2{msg: strings.TrimSpace(string(body))}
+	default:
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("server refused upgrade: %s\n%s", resp.Status, string(body))
+	}
+}
+
+// dialUnixSock dials a unix socket, with a long-path fallback (chdir
+// then bind a relative path). Mirrors the server-side dialSock.
+func dialUnixSock(ctx context.Context, sockPath string) (net.Conn, error) {
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "unix", sockPath)
+	if err == nil {
+		return conn, nil
+	}
+	// Fallback: chdir to make the socket path short.
+	cwd, gerr := os.Getwd()
+	if gerr != nil {
+		return nil, err
+	}
+	if cerr := os.Chdir(filepath.Dir(sockPath)); cerr != nil {
+		return nil, err
+	}
+	defer os.Chdir(cwd)
+	return d.DialContext(ctx, "unix", filepath.Base(sockPath))
+}
+
+// parseHostFlag normalizes the --host argument into an http(s) URL.
+// Accepts:
+//
+//	"m4mini:20000"        → http://m4mini:20000
+//	"http://m4mini:20000" → http://m4mini:20000
+//	"https://m4mini:443"  → https://m4mini:443
+//
+// Path / query are stripped (we always target /sessions/.../attach-raw).
+func parseHostFlag(s string) (*url.URL, error) {
+	if !strings.Contains(s, "://") {
+		s = "http://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return nil, fmt.Errorf("--host: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("--host: unsupported scheme %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf("--host: missing host")
+	}
+	u.Path = ""
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u, nil
+}
+
+// hostFromHostport returns the host part of host:port for the TLS
+// SNI / cert-verify ServerName field.
+func hostFromHostport(hp string) string {
+	if h, _, err := net.SplitHostPort(hp); err == nil {
+		return h
+	}
+	return hp
+}
+
+// localSize returns local terminal cols/rows, or (0,0) if stdin is
+// not a tty.
 func localSize() (uint16, uint16) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return 0, 0
@@ -420,18 +797,22 @@ func localSize() (uint16, uint16) {
 	return uint16(c), uint16(r)
 }
 
-// dialUnixRelative chdirs into the state dir to bind a short relative
-// socket path; matches the server-side fallback in supervisor.go.
-func dialUnixRelative(absPath string) (net.Conn, error) {
-	dir := filepath.Dir(absPath)
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil, err
+// localOrDefaultSize returns local terminal size, falling back to
+// 80×24 if stdin is not a tty (scripted attaches).
+func localOrDefaultSize() (uint16, uint16) {
+	c, r := localSize()
+	if c == 0 || r == 0 {
+		return 80, 24
 	}
-	if err := os.Chdir(dir); err != nil {
-		return nil, err
-	}
-	defer os.Chdir(cwd)
-	return net.Dial("unix", filepath.Base(absPath))
+	return c, r
 }
 
+// packSize / unpackSize fold (cols, rows) into a single uint64 so
+// they can ride an atomic.Uint64 without a separate mutex.
+func packSize(cols, rows uint16) uint64 {
+	return uint64(cols)<<16 | uint64(rows)
+}
+
+func unpackSize(v uint64) (uint16, uint16) {
+	return uint16(v >> 16), uint16(v & 0xffff)
+}

@@ -80,9 +80,10 @@ Plus the always-present library routes:
 supervise run     [--state-dir <dir>] [--key <key>] -- <cmd> [args...]
 supervise list    [--state-dir <dir>]
 supervise resolve [--state-dir <dir>] <id-or-prefix>
-supervise attach  [--state-dir <dir>] [--no-full-replay]
+supervise attach  [--host <addr>] [--state-dir <dir>]
+                  [--no-full-replay] [--no-reconnect]
                   [--prefix-key <key>] <id-or-prefix>
-supervise serve   [--state-dir <dir>] --port <p> [--addr 127.0.0.1] [--prefix /api]
+supervise serve   [--state-dir <dir>] --bind <host:port> [--prefix /api]
 ```
 
 `--state-dir` defaults to `~/.supervise` for every subcommand.
@@ -141,7 +142,40 @@ default is `C-b` (overridable via `--prefix-key C-a`, `--prefix-key
 | `<prefix> <prefix>`   | send literal prefix byte to remote                |
 
 Exit codes: `0` clean detach, `1` protocol/dial error, `2` argument
-error, `130` terminated by SIGINT/SIGTERM/SIGHUP we trapped.
+error (or `404`/`409` from a remote `attach-raw`), `130` terminated by
+SIGINT/SIGTERM/SIGHUP we trapped.
+
+#### Remote attach (`--host`)
+
+`attach --host` connects to a `supervise serve` host instead of dialing
+a local `rpc.sock`. The server resolves the short id and bridges the
+HTTP/1.1 `Upgrade: supervise-attach/1` straight through to its session's
+`rpc.sock` — same `attachwire` protocol, just transported over TCP (or
+TLS).
+
+```sh
+supervise attach --host m4mini:20000 abc          # bare host:port
+supervise attach --host http://m4mini:20000 abc   # explicit scheme
+supervise attach --host https://m4mini:443  abc   # TLS
+```
+
+`--host` accepts:
+
+- `host:port` (defaults to `http://`)
+- `http://host:port` / `https://host[:port]`
+
+Auto-reconnect (default on `--host`, opt out with `--no-reconnect`):
+
+- Backoff: 1s, 2s, 4s, 8s, 16s, 30s — capped at 30s, retries forever.
+- A status line on stderr counts down each tier in place: `[supervise:
+  reconnecting in 5s — press any key to retry now]`. Pressing any
+  non-prefix key wakes the backoff and retries immediately.
+- Termios stays raw across drops. On reconnect the client sends a fresh
+  `Hello` with the current cols/rows; default `--full-replay` repaints
+  the screen so the disconnect line is overwritten naturally.
+- `<prefix>d` detaches cleanly even mid-disconnect.
+- A 404 (no session matched) or 409 (ambiguous prefix) on the upgrade
+  response surfaces as exit 2 with the server's message.
 
 ### `supervise serve`
 
@@ -151,7 +185,7 @@ UI can drive without dialing each session's `rpc.sock` directly
 (the browser cannot speak unix-socket).
 
 ```sh
-supervise serve --port 8080 --state-dir ~/.supervise [--prefix /api]
+supervise serve --bind 127.0.0.1:8080 --state-dir ~/.supervise [--prefix /api]
 ```
 
 Routes (mounted at the bare path and — if `--prefix` is set — at
@@ -166,14 +200,21 @@ Routes (mounted at the bare path and — if `--prefix` is set — at
 | DELETE | `/sessions/{key}`           | SIGTERM the supervisor by pid (204)                              |
 | GET    | `/sessions/{key}/state`     | state.json                                                       |
 | GET    | `/sessions/{key}/events`    | SSE proxy of upstream `/events`                                  |
-| GET    | `/sessions/{key}/attach`    | WebSocket bridge to upstream `/attach`                           |
+| GET    | `/sessions/{key}/attach`    | WebSocket bridge to upstream `/attach` (browser)                 |
+| GET    | `/sessions/{key}/attach-raw`| HTTP/1.1 Upgrade pass-through to upstream `/attach` (CLI)        |
 | GET    | `/healthz`                  | liveness                                                         |
 
-The WebSocket bridge speaks browser-friendly framing —
+The WebSocket bridge (`/attach`) speaks browser-friendly framing —
 binary frames carry PTY bytes both directions, and a text frame
 `{"type":"resize","cols":N,"rows":N}` is translated into an
 `attachwire.MsgSize` upstream — and terminates the
 `supervise-attach/1` HTTP-Upgrade protocol on the rpc.sock side.
+
+The Upgrade pass-through (`/attach-raw`) is for the CLI: it resolves
+`{key}` (full id or unique prefix) server-side, hijacks the client
+connection, and `io.Copy`s bytes both ways with no transcoding. The
+client speaks the same `supervise-attach/1` framing it uses against a
+local `rpc.sock`. 404 on no-match, 409 on ambiguous prefix.
 
 ### Example dashboard
 
