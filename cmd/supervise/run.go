@@ -7,8 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -16,6 +14,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/hayeah/supervisor"
+	"github.com/hayeah/supervisor/internal/shortid"
 )
 
 // cmdRun opens a PTY pair, forks `supervise __supervise` with the
@@ -29,7 +28,7 @@ import (
 func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
-	key := fs.String("key", "", "session key (default: auto from cmd name + timestamp)")
+	key := fs.String("key", "", "session key (default: random short id)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -37,12 +36,15 @@ func cmdRun(args []string) error {
 	if len(rest) == 0 {
 		return errors.New("run: missing command after --")
 	}
-	if *key == "" {
-		*key = autoKey(rest[0])
-	}
 
 	store := supervisor.NewStore(*stateDir)
-	if store.IsAlive(*key) {
+	if *key == "" {
+		generated, err := generateKey(store)
+		if err != nil {
+			return fmt.Errorf("run: generate key: %w", err)
+		}
+		*key = generated
+	} else if store.IsAlive(*key) {
 		return fmt.Errorf("run: session %q is already alive — pick a different --key or kill it first", *key)
 	}
 
@@ -115,29 +117,18 @@ func cmdRun(args []string) error {
 	return nil
 }
 
-// autoKey builds a key from the command basename + a short
-// timestamp suffix. Lowercase, letters / digits / dashes only.
-func autoKey(cmdName string) string {
-	base := filepath.Base(cmdName)
-	safe := strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z':
-			return r
-		case r >= 'A' && r <= 'Z':
-			return r + 32
-		case r >= '0' && r <= '9':
-			return r
-		case r == '-' || r == '_':
-			return r
-		default:
-			return '-'
-		}
-	}, base)
-	if safe == "" {
-		safe = "sess"
+// generateKey returns a random short id that doesn't collide with
+// any existing session directory under the store's state dir.
+func generateKey(store *supervisor.Store) (string, error) {
+	existing := map[string]bool{}
+	states, err := store.List()
+	if err != nil {
+		return "", err
 	}
-	suffix := strconv.FormatInt(time.Now().Unix()%100000, 10)
-	return safe + "-" + suffix
+	for _, st := range states {
+		existing[st.Supervisor.Key] = true
+	}
+	return shortid.Generate(existing)
 }
 
 // waitForSocket polls for the unix socket file to appear.

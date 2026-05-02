@@ -2,8 +2,12 @@ package supervisor
 
 import (
 	"encoding/json"
+	"errors"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/hayeah/supervisor/internal/shortid"
 )
 
 func TestWriterAndStore(t *testing.T) {
@@ -57,13 +61,68 @@ func TestWriterAndStore(t *testing.T) {
 		t.Errorf("got %d states, want 1", len(states))
 	}
 
-	// Resolve
-	resolved, err := store.Resolve("vi")
+	// Resolve by unique prefix
+	resolved, err := store.Resolve("vit")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	if resolved.Supervisor.Key != "vite" {
 		t.Errorf("got key=%s, want vite", resolved.Supervisor.Key)
+	}
+
+	// Resolve by exact match
+	resolved, err = store.Resolve("vite")
+	if err != nil {
+		t.Fatalf("Resolve exact: %v", err)
+	}
+	if resolved.Supervisor.Key != "vite" {
+		t.Errorf("exact: got key=%s, want vite", resolved.Supervisor.Key)
+	}
+}
+
+func TestStoreResolveErrors(t *testing.T) {
+	dir := t.TempDir()
+
+	// Two sessions with overlapping prefix.
+	for _, k := range []string{"abc123", "abc456"} {
+		w, err := OpenWriter(filepath.Join(dir, k), StateFile{
+			Supervisor: SupervisorState{Key: k, CreatedAt: time.Now()},
+		})
+		if err != nil {
+			t.Fatalf("OpenWriter %s: %v", k, err)
+		}
+		w.Close()
+	}
+	store := NewStore(dir)
+
+	if _, err := store.Resolve("ab"); err == nil {
+		t.Fatal("expected error for too-short query")
+	} else {
+		var tooShort *shortid.IDTooShortError
+		if !errors.As(err, &tooShort) {
+			t.Fatalf("expected IDTooShortError, got %T: %v", err, err)
+		}
+	}
+
+	if _, err := store.Resolve("abc"); err == nil {
+		t.Fatal("expected ambiguous error")
+	} else {
+		var ambig *shortid.AmbiguousIDError
+		if !errors.As(err, &ambig) {
+			t.Fatalf("expected AmbiguousIDError, got %T: %v", err, err)
+		}
+		if len(ambig.Matches) != 2 {
+			t.Errorf("got %d matches, want 2", len(ambig.Matches))
+		}
+	}
+
+	if _, err := store.Resolve("zzz"); err == nil {
+		t.Fatal("expected not-found error")
+	} else {
+		var nf *shortid.IDNotFoundError
+		if !errors.As(err, &nf) {
+			t.Fatalf("expected IDNotFoundError, got %T: %v", err, err)
+		}
 	}
 }
 

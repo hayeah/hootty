@@ -6,8 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
+
+	"github.com/hayeah/supervisor/internal/shortid"
 )
 
 // Store reads supervised process state from a directory of directories.
@@ -71,29 +72,27 @@ func (s *Store) Delete(key string) error {
 	return os.RemoveAll(filepath.Join(s.Dir, key))
 }
 
-// Resolve finds a state by shortest unambiguous prefix match.
-func (s *Store) Resolve(prefix string) (*StateFile, error) {
+// Resolve finds a state by full id or unique prefix match
+// (case-insensitive). Returns shortid.IDTooShortError,
+// shortid.AmbiguousIDError, or shortid.IDNotFoundError on failure;
+// callers can errors.As against those to surface friendly messages.
+func (s *Store) Resolve(query string) (*StateFile, error) {
 	entries, err := os.ReadDir(s.Dir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve: %w", err)
 	}
-	var matches []string
+	var candidates []string
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		if strings.HasPrefix(entry.Name(), prefix) {
-			matches = append(matches, entry.Name())
-		}
+		candidates = append(candidates, entry.Name())
 	}
-	switch len(matches) {
-	case 0:
-		return nil, fmt.Errorf("no match for prefix %q", prefix)
-	case 1:
-		return s.Load(matches[0])
-	default:
-		return nil, fmt.Errorf("ambiguous prefix %q: %v", prefix, matches)
+	match, err := shortid.Resolve(query, candidates)
+	if err != nil {
+		return nil, err
 	}
+	return s.Load(match)
 }
 
 // Writer holds the dir flock and owns all writes to state.json.
