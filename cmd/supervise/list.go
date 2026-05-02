@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -8,9 +9,11 @@ import (
 	"github.com/hayeah/supervisor"
 )
 
-// cmdList prints all sessions found under --state-dir, one per line:
-//
-//	<key>\t<alive|dead>\t<created_at>
+// cmdList emits one JSON object per line — each line is a
+// supervisor.StateFile serialized as-is. No bespoke list view, no
+// derived fields: callers that need liveness can probe the flock
+// themselves, or call `supervise resolve` and look at the supervisor
+// PID.
 func cmdList(args []string) error {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
@@ -23,15 +26,11 @@ func cmdList(args []string) error {
 	if err != nil {
 		return err
 	}
+	enc := json.NewEncoder(os.Stdout)
 	for _, st := range states {
-		alive := "dead"
-		if store.IsAlive(st.Supervisor.Key) {
-			alive = "alive"
+		if err := enc.Encode(st); err != nil {
+			return err
 		}
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\n",
-			st.Supervisor.Key, alive,
-			st.Supervisor.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		)
 	}
 	return nil
 }

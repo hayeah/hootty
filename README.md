@@ -77,12 +77,18 @@ Plus the always-present library routes:
 ## `supervise` CLI
 
 ```sh
-supervise run     --state-dir <dir> [--key <key>] -- <cmd> [args...]
-supervise list    --state-dir <dir>
-supervise resolve --state-dir <dir> <id-or-prefix>
-supervise attach  --state-dir <dir> [--no-full-replay]
+supervise run     [--state-dir <dir>] [--key <key>] -- <cmd> [args...]
+supervise list    [--state-dir <dir>]
+supervise resolve [--state-dir <dir>] <id-or-prefix>
+supervise attach  [--state-dir <dir>] [--no-full-replay]
                   [--prefix-key <key>] <id-or-prefix>
 ```
+
+`--state-dir` defaults to `~/.supervise` for every subcommand.
+
+`supervise list` emits JSONL — one line per session, each line a
+serialized `supervisor.StateFile` (the same shape `<dir>/<key>/state.json`
+holds on disk). Pipe through `jq -s` if you want an array.
 
 `run` opens a PTY pair, forks an internal supervisor process (with the
 master on fd 3 and stdio = slave), and serves the mux on
