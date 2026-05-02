@@ -82,7 +82,7 @@ supervise list    [--state-dir <dir>]
 supervise resolve [--state-dir <dir>] <id-or-prefix>
 supervise attach  [--state-dir <dir>] [--no-full-replay]
                   [--prefix-key <key>] <id-or-prefix>
-supervise serve   [--state-dir <dir>] --port <p> [--addr 127.0.0.1] [--prefix /api]
+supervise serve   [--state-dir <dir>] --bind <host:port> [--prefix /api]
 ```
 
 `--state-dir` defaults to `~/.supervise` for every subcommand.
@@ -151,7 +151,7 @@ UI can drive without dialing each session's `rpc.sock` directly
 (the browser cannot speak unix-socket).
 
 ```sh
-supervise serve --port 8080 --state-dir ~/.supervise [--prefix /api]
+supervise serve --bind 127.0.0.1:8080 --state-dir ~/.supervise [--prefix /api]
 ```
 
 Routes (mounted at the bare path and — if `--prefix` is set — at

@@ -11,8 +11,7 @@ type = "proxy"
   type         = "exec"
   command      = [
     "./bin/supervise", "serve",
-    "--port", "$${PORT}",
-    "--addr", "127.0.0.1",
+    "--bind", "127.0.0.1:$${PORT}",
     "--state-dir", ".supervise",
   ]
     [service.routes.health]
