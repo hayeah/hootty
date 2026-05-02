@@ -49,11 +49,21 @@ type LibghosttyPTY struct {
 	// subs. Send-only from outside the dispatcher goroutine.
 	actions chan func()
 
-	subs map[chan []byte]struct{} // owned by dispatcher goroutine
-	rec  *Recorder                // owned by dispatcher goroutine
+	subs map[chan []byte]*subscriber // owned by dispatcher goroutine
+	rec  *Recorder                   // owned by dispatcher goroutine
 
 	doneOnce sync.Once
 	done     chan struct{}
+}
+
+// subscriber bundles a per-attach query stripper with its delivery
+// channel. The stripper holds streaming state across chunk
+// boundaries: an escape sequence that begins in chunk N and
+// finishes in chunk N+1 is recognized correctly. One stripper per
+// subscriber so per-attach state never crosses connections.
+type subscriber struct {
+	ch       chan []byte
+	stripper vtQueryStripper
 }
 
 // LibghosttyOption configures a LibghosttyPTY at construction.
@@ -100,7 +110,7 @@ func NewLibghosttyPTY(master *os.File, cols, rows uint16, opts ...LibghosttyOpti
 		cols:    cols,
 		rows:    rows,
 		actions: make(chan func(), 64),
-		subs:    make(map[chan []byte]struct{}),
+		subs:    make(map[chan []byte]*subscriber),
 		rec:     o.rec,
 		done:    make(chan struct{}),
 	}
@@ -135,9 +145,9 @@ func (p *LibghosttyPTY) Close() error {
 		shutdown := make(chan struct{})
 		select {
 		case p.actions <- func() {
-			for ch := range p.subs {
+			for ch, sub := range p.subs {
 				delete(p.subs, ch)
-				close(ch)
+				close(sub.ch)
 			}
 			if p.term != nil {
 				p.term.Close()
@@ -214,9 +224,19 @@ func (p *LibghosttyPTY) readLoop() {
 				if p.term != nil {
 					p.term.VTWrite(chunk)
 				}
-				for ch := range p.subs {
+				// Per-subscriber strip pass: filter out terminal-
+				// query escape sequences (DA/DSR/CPR/XTVERSION/...)
+				// before fanout. The recorder + emulator above see
+				// the unfiltered bytes; only the user's real terminal
+				// is shielded from re-answering queries that the
+				// emulator already answered. See vtquery_stripper.go.
+				for _, sub := range p.subs {
+					filtered := sub.stripper.Filter(chunk)
+					if len(filtered) == 0 {
+						continue
+					}
 					select {
-					case ch <- chunk:
+					case sub.ch <- filtered:
 					default:
 						// Slow subscriber: drop. They re-sync on
 						// reattach via the snapshot prefix.
@@ -388,8 +408,9 @@ func (p *LibghosttyPTY) Snapshot() ([]byte, error) {
 // the channel and a cancel function.
 func (p *LibghosttyPTY) subscribe() (<-chan []byte, func()) {
 	ch := make(chan []byte, 64)
+	sub := &subscriber{ch: ch}
 	p.do(func() {
-		p.subs[ch] = struct{}{}
+		p.subs[ch] = sub
 	})
 	cancel := func() {
 		p.do(func() {
@@ -416,9 +437,10 @@ func (p *LibghosttyPTY) subscribe() (<-chan []byte, func()) {
 // the subscription and closes the channel.
 func (p *LibghosttyPTY) SubscribeAtRecord() (<-chan []byte, int64, func()) {
 	ch := make(chan []byte, 256)
+	sub := &subscriber{ch: ch}
 	var offset int64
 	p.do(func() {
-		p.subs[ch] = struct{}{}
+		p.subs[ch] = sub
 		if p.rec != nil {
 			offset = p.rec.Size()
 		}
