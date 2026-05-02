@@ -52,15 +52,16 @@ func usage() {
 	fmt.Fprint(os.Stderr, `supervise — reference CLI for the supervisor library
 
 Usage:
-  supervise run     --state-dir <d> [--key <k>] -- <cmd> [args...]
-  supervise list    --state-dir <d>
-  supervise resolve --state-dir <d> <id-or-prefix>
-  supervise attach  --state-dir <d> [--no-full-replay]
+  supervise run     [--state-dir <d>] [--key <k>] -- <cmd> [args...]
+  supervise list    [--state-dir <d>]
+  supervise resolve [--state-dir <d>] <id-or-prefix>
+  supervise attach  [--state-dir <d>] [--no-full-replay]
                     [--prefix-key <key>] <id-or-prefix>
 
 The session state directory is <state-dir>/<key>/. The supervisor
-serves rpc.sock and writes pty.log inside it. If --key is omitted,
-a random short id (3-8 chars from 0-9a-z minus l/o) is generated.
+serves rpc.sock and writes pty.log inside it. --state-dir defaults
+to ~/.supervise. If --key is omitted, a random short id (3-8 chars
+from 0-9a-z minus l/o) is generated.
 
 Anywhere a session key is accepted, you can pass either the full id
 or any unique prefix (minimum 3 characters). Ambiguous prefixes
