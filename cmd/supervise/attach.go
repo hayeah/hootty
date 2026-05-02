@@ -248,10 +248,14 @@ func runAttach(sockPath string, prefixByte byte, replayMode string) (int, error)
 		}
 	}()
 
-	// stdin → server, with prefix-key state machine.
+	// stdin → server, with prefix-key state machine. We do NOT
+	// terminate the attach on stdin EOF (the user may have piped
+	// finite input but still want to watch live output). Detach is
+	// server EOF / ctx cancel / <prefix>d only.
 	stdinDone := make(chan error, 1)
 	go func() {
-		stdinDone <- runStdinLoop(ctx, prefixByte, send, cancel)
+		err := runStdinLoop(ctx, prefixByte, send, cancel)
+		stdinDone <- err
 	}()
 
 	// server → stdout. This goroutine reads framed messages and
@@ -264,14 +268,12 @@ func runAttach(sockPath string, prefixByte byte, replayMode string) (int, error)
 	}()
 
 	// Wait for any of: server EOF, ctx cancel (signal trap or
-	// <prefix>d from stdin loop), stdin EOF.
+	// <prefix>d from stdin loop). Stdin EOF alone does not detach.
 	var loopErr error
 	select {
 	case err := <-serverDone:
 		loopErr = err
 	case <-ctx.Done():
-	case err := <-stdinDone:
-		loopErr = err
 	}
 
 	// Tear down the conn so the other goroutines unblock.

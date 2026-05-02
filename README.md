@@ -65,6 +65,7 @@ server.
 | `/pty/stream`     | GET    | Chunked binary: VT snapshot + live PTY bytes.                 |
 | `/pty/input`      | POST   | Body bytes → PTY master (raw passthrough).                    |
 | `/pty/resize`     | POST   | `{cols, rows}` JSON → resize.                                 |
+| `/attach`         | GET    | HTTP/1.1 Upgrade → binary attach protocol (see below).        |
 
 Plus the always-present library routes:
 
@@ -79,6 +80,8 @@ Plus the always-present library routes:
 supervise run     --state-dir <dir> [--key <key>] -- <cmd> [args...]
 supervise list    --state-dir <dir>
 supervise resolve --state-dir <dir> <id-or-prefix>
+supervise attach  --state-dir <dir> [--no-full-replay]
+                  [--prefix-key <key>] <id-or-prefix>
 ```
 
 `run` opens a PTY pair, forks an internal supervisor process (with the
@@ -95,9 +98,49 @@ either the full id or any unique prefix (minimum 3 characters,
 case-insensitive). Ambiguous prefixes fail with an error listing the
 matching ids; this is what makes the random ids ergonomic to use.
 
+### `supervise attach`
+
+`attach` connects the local terminal to a running supervisor as a
+"dumb pipe with two side-channels": stdin → PTY master, master →
+stdout, plus a SIGWINCH → resize side-channel. The local termios is
+put into raw mode (no echo, no line buffering, no `Ctrl-C` →
+local SIGINT) so signal generation happens on the *remote* slave
+ldisc, not locally — the user's `Ctrl-C` reaches the supervised
+child as expected.
+
+Multiple attaches can drive the same session simultaneously. The
+PTY winsize is negotiated as `min(cols)`, `min(rows)` across all
+connected attaches; the negotiated size is broadcast back to every
+attach as a `Size` frame whenever it changes.
+
+Initial replay modes:
+
+- **full replay (default)** — pump the entire `<dir>/<key>/pty.log`
+  to the client before switching to live, race-free at the cutover
+  (the recorder offset is captured atomically with subscribing to
+  the live tee). Gives the local terminal native scrollback.
+- **`--no-full-replay`** — send a libghostty-formatted snapshot of
+  the current screen + scrollback as the first frame, then live.
+  Faster attach; no native scrollback.
+
+Inside an attach, a tmux-style prefix key introduces commands. The
+default is `C-b` (overridable via `--prefix-key C-a`, `--prefix-key
+0x1c`, …). Printable bytes are rejected at flag-parse time.
+
+| sequence              | action                                            |
+| --------------------- | ------------------------------------------------- |
+| `<prefix> d`          | detach (clean exit 0)                             |
+| `<prefix> ?`          | print one-line help on stderr, stay attached     |
+| `<prefix> <prefix>`   | send literal prefix byte to remote                |
+
+Exit codes: `0` clean detach, `1` protocol/dial error, `2` argument
+error, `130` terminated by SIGINT/SIGTERM/SIGHUP we trapped.
+
 ## Future work (out of scope here)
 
-- An `attach` CLI that replays `<dir>/<key>/pty.log` into a tmux pane (the
-  tee recorder is the seam).
-- Multi-attachment window-size negotiation.
+- A `--render` mode for `attach` that embeds libghostty client-side
+  and composites the child's virtual screen into a sub-region of
+  the local terminal (so per-attach winsize can diverge from the
+  negotiated min).
+- Reconnect / resume.
 - Remote HTTP access.
