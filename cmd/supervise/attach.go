@@ -38,8 +38,8 @@ import (
 //
 // The remote path supports automatic reconnect (default; `--no-reconnect`
 // to opt out). Termios stays raw across drops; on reconnect the client
-// sends a fresh Hello with current local cols/rows, which triggers a
-// full-replay (or snapshot if `--no-full-replay`) and repaints.
+// sends a fresh Hello with current local cols/rows, and the server
+// repaints by sending a libghostty snapshot of the current screen.
 //
 // Exit codes:
 //
@@ -58,7 +58,6 @@ func cmdAttach(args []string) int {
                          http://host:port, or https://host:port
   --state-dir <dir>      session state directory (default: ~/.supervise);
                          only used for local attach (no --host)
-  --no-full-replay       send a libghostty snapshot instead of streaming pty.log
   --no-reconnect         exit on first drop instead of auto-reconnecting
                          (--host only; ignored for local attach)
   --prefix-key <key>     command prefix byte (default: C-^). Forms: C-^, ^^,
@@ -75,7 +74,6 @@ retries forever. Press any key to wake the backoff and retry now.
 	}
 	host := fs.String("host", "", "remote `supervise serve` host (host:port or URL)")
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
-	noFullReplay := fs.Bool("no-full-replay", false, "send a libghostty snapshot instead of streaming pty.log")
 	noReconnect := fs.Bool("no-reconnect", false, "exit on first drop instead of auto-reconnecting (--host only)")
 	prefixSpec := fs.String("prefix-key", "C-^", "command prefix byte (e.g. C-^, ^a, 0x1c)")
 	if err := fs.Parse(args); err != nil {
@@ -91,11 +89,6 @@ retries forever. Press any key to wake the backoff and retry now.
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "supervise attach: %v\n", err)
 		return 2
-	}
-
-	replayMode := "full"
-	if *noFullReplay {
-		replayMode = "snapshot"
 	}
 
 	var dial dialFn
@@ -119,7 +112,7 @@ retries forever. Press any key to wake the backoff and retry now.
 		dial = localDialer(sockPath)
 	}
 
-	exitCode, err := runAttachLoop(dial, prefixByte, replayMode, reconnect)
+	exitCode, err := runAttachLoop(dial, prefixByte, reconnect)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "supervise attach: %v\n", err)
 	}
@@ -136,7 +129,7 @@ type dialFn func(ctx context.Context) (net.Conn, error)
 // re-runs per attempt across reconnects.
 //
 // Returns the process exit code and an optional error to print.
-func runAttachLoop(dial dialFn, prefixByte byte, replayMode string, reconnect bool) (int, error) {
+func runAttachLoop(dial dialFn, prefixByte byte, reconnect bool) (int, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -220,7 +213,7 @@ func runAttachLoop(dial dialFn, prefixByte byte, replayMode string, reconnect bo
 	}()
 
 	// Reconnect loop.
-	loopErr := runConnectLoop(ctx, dial, replayMode, reconnect, &size, shared)
+	loopErr := runConnectLoop(ctx, dial, reconnect, &size, shared)
 
 	// Determine exit code from outer signals.
 	select {
@@ -250,7 +243,6 @@ func runAttachLoop(dial dialFn, prefixByte byte, replayMode string, reconnect bo
 func runConnectLoop(
 	ctx context.Context,
 	dial dialFn,
-	replayMode string,
 	reconnect bool,
 	size *atomic.Uint64,
 	shared *sharedSession,
@@ -287,7 +279,7 @@ func runConnectLoop(
 		// Connected. Reset backoff and send Hello with current size.
 		shared.resetTier()
 		c, r := unpackSize(size.Load())
-		err = runSession(ctx, conn, c, r, replayMode, shared)
+		err = runSession(ctx, conn, c, r, shared)
 		_ = conn.Close()
 
 		if ctx.Err() != nil {
@@ -330,7 +322,6 @@ func runSession(
 	ctx context.Context,
 	conn net.Conn,
 	cols, rows uint16,
-	replayMode string,
 	shared *sharedSession,
 ) error {
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
@@ -371,9 +362,8 @@ func runSession(
 
 	// Hello.
 	helloPayload, _ := json.Marshal(attachwire.Hello{
-		Cols:       cols,
-		Rows:       rows,
-		ReplayMode: replayMode,
+		Cols: cols,
+		Rows: rows,
 	})
 	if !send(attachwire.MsgHello, helloPayload) {
 		return errors.New("ctx cancelled before Hello")

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"sync"
 
 	"github.com/hayeah/supervisor/internal/attachwire"
@@ -118,12 +117,6 @@ func (h *attachHandler) serveOne(conn io.ReadWriteCloser, bufrw *bufio.ReadWrite
 	if hello.Cols == 0 || hello.Rows == 0 {
 		return errors.New("hello: cols and rows must be positive")
 	}
-	switch hello.ReplayMode {
-	case "", "full", "snapshot":
-		// ok
-	default:
-		return fmt.Errorf("hello: unknown replay_mode %q", hello.ReplayMode)
-	}
 
 	// Serialize all writes onto the connection through one channel +
 	// one goroutine. Output frames, Size frames, and the replay
@@ -179,33 +172,27 @@ func (h *attachHandler) serveOne(conn io.ReadWriteCloser, bufrw *bufio.ReadWrite
 		send(attachwire.MsgSize, payload)
 	}
 
-	// Subscribe to live atomically with capturing the recorder
-	// offset. Live chunks delivered after subscribe carry offsets >=
-	// recOffset, so we can stream pty.log[0..recOffset) first and
-	// then drain the channel for the post-offset bytes — no gap, no
-	// duplication.
-	liveCh, recOffset, cancelSub := h.pty.SubscribeAtRecord()
+	// Subscribe to live atomically with snapshotting the screen.
+	// Both happen on the dispatcher goroutine, so the snapshot we
+	// send and the live chunks the subscriber sees are causally
+	// ordered with no gap or duplication: the snapshot reflects the
+	// emulator's state up to (but not including) any live chunk that
+	// arrives on the channel.
+	liveCh, _, cancelSub := h.pty.SubscribeAtRecord()
 	defer cancelSub()
 
-	// Initial replay phase — bytes we write here are framed as
-	// Output and pushed through outCh. The live drain has its own
-	// goroutine that we start *after* replay so we can sequence the
-	// dump correctly.
-	switch hello.ReplayMode {
-	case "snapshot":
-		snap, err := h.pty.Snapshot()
-		if err != nil {
-			return fmt.Errorf("snapshot: %w", err)
-		}
-		if len(snap) > 0 {
-			send(attachwire.MsgOutput, snap)
-		}
-	default: // "full" or ""
-		if rec := h.pty.Recorder(); rec != nil && recOffset > 0 {
-			if err := pumpRecording(rec.Path(), recOffset, send); err != nil {
-				return fmt.Errorf("replay pty.log: %w", err)
-			}
-		}
+	// Initial replay: a libghostty snapshot of the active screen
+	// (includes scrollback up to max_scrollback). Snapshot is the
+	// only replay mode — full pty.log replay was removed because it
+	// re-issues every terminal query the child ever sent, which the
+	// real terminal would dutifully answer back into the child's
+	// stdin. See spec.md / docs/tasks/<slug>/spec.md.
+	snap, err := h.pty.Snapshot()
+	if err != nil {
+		return fmt.Errorf("snapshot: %w", err)
+	}
+	if len(snap) > 0 {
+		send(attachwire.MsgOutput, snap)
 	}
 
 	// Now spool any chunks the live subscription has buffered (these
@@ -269,39 +256,3 @@ func (h *attachHandler) clientReadLoop(bufrw *bufio.ReadWriter, ac *attachConn) 
 	}
 }
 
-// pumpRecording streams pty.log[0..n) to the client as Output frames.
-// We chunk at 32 KiB to keep frames bounded and to give the live
-// drain a chance to interleave small bursts (it can't, technically —
-// outCh is FIFO — but bounded frames are nicer for the receiver).
-func pumpRecording(path string, n int64, send func(typ byte, payload []byte)) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	const chunk = 32 * 1024
-	buf := make([]byte, chunk)
-	var read int64
-	for read < n {
-		toRead := int64(len(buf))
-		if remaining := n - read; remaining < toRead {
-			toRead = remaining
-		}
-		m, err := io.ReadFull(f, buf[:toRead])
-		if m > 0 {
-			send(attachwire.MsgOutput, append([]byte(nil), buf[:m]...))
-			read += int64(m)
-		}
-		if err != nil {
-			if err == io.EOF || err == io.ErrUnexpectedEOF {
-				// pty.log shorter than recorded offset (shouldn't
-				// happen — recorder writes synchronously before we
-				// captured offset). Stop replay and let live take
-				// over.
-				return nil
-			}
-			return err
-		}
-	}
-	return nil
-}

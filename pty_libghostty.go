@@ -244,10 +244,12 @@ func (p *LibghosttyPTY) Write(data []byte) error {
 }
 
 // Capture returns a textual dump of the current screen. lines is
-// advisory and currently ignored (libghostty's formatter formats the
-// whole terminal — there is no row-range API). withEscapes=true
-// emits VT-replayable bytes (FormatterFormatVT); false emits plain
-// text (FormatterFormatPlain).
+// advisory and currently ignored: libghostty's formatter walks the
+// emulator's full active screen — viewport plus scrollback up to
+// max_scrollback rows — and there's no row-range slicing knob. The
+// scrollback ring cap is the only way to bound output. withEscapes
+// =true emits VT-replayable bytes (FormatterFormatVT); false emits
+// plain text (FormatterFormatPlain).
 func (p *LibghosttyPTY) Capture(lines int, withEscapes bool) (string, error) {
 	_ = lines
 	format := libghostty.FormatterFormatPlain
@@ -346,8 +348,40 @@ func (p *LibghosttyPTY) Size() (cols, rows uint16) {
 // Snapshot returns the current screen as VT-replayable bytes — the
 // first chunk of /pty/stream so subscribers render a faithful screen
 // before live bytes arrive.
+//
+// Includes scrollback (up to max_scrollback × cols), the cursor
+// position, the active SGR style, and any non-default terminal modes,
+// so a fresh terminal repaints the same picture the supervisor sees.
+//
+// Known limitation: when the child is on the alt screen (tmux, vim,
+// less, etc.) the snapshot is just the alt-screen contents — the
+// primary scrollback the supervisor recorded is preserved internally
+// but invisible to the formatter, and when the child later exits alt
+// the user's terminal restores its own (empty) primary. See
+// ~/Dropbox/notes/2026-05-02/supervise-alt-screen-scrollback-gap_claude.md.
 func (p *LibghosttyPTY) Snapshot() ([]byte, error) {
-	return p.FormatVT()
+	var out []byte
+	var ferr error
+	p.do(func() {
+		if p.term == nil {
+			ferr = errors.New("pty closed")
+			return
+		}
+		f, err := libghostty.NewFormatter(p.term,
+			libghostty.WithFormatterFormat(libghostty.FormatterFormatVT),
+			libghostty.WithFormatterTrim(true),
+			libghostty.WithFormatterExtraCursor(true),
+			libghostty.WithFormatterExtraStyle(true),
+			libghostty.WithFormatterExtraModes(true),
+		)
+		if err != nil {
+			ferr = err
+			return
+		}
+		defer f.Close()
+		out, ferr = f.Format()
+	})
+	return out, ferr
 }
 
 // subscribe registers a channel to receive live PTY bytes. Returns

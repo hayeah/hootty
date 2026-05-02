@@ -32,17 +32,16 @@ const (
 	MsgSize   byte = 0x03
 )
 
-// MaxPayload is a sanity cap on a single frame payload. The largest
-// realistic frame is a full pty.log dumped during full-replay; we
-// stream it in chunks well below this.
+// MaxPayload is a sanity cap on a single frame payload. The replay
+// snapshot is bounded by the emulator's max_scrollback × cols, so a
+// 16 MiB cap is comfortably above any realistic frame.
 const MaxPayload = 1 << 24 // 16 MiB
 
 // Hello is the first frame the client sends. The server answers
 // with Output frames (and a Size{} broadcast); there is no Welcome.
 type Hello struct {
-	Cols       uint16 `json:"cols"`
-	Rows       uint16 `json:"rows"`
-	ReplayMode string `json:"replay_mode"` // "full" | "snapshot"
+	Cols uint16 `json:"cols"`
+	Rows uint16 `json:"rows"`
 }
 
 // Size is direction-overloaded. C→S: client declares its current
