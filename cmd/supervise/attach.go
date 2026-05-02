@@ -278,7 +278,7 @@ func runConnectLoop(
 				return err
 			}
 			if !waitBackoff(ctx, shared, "redial failed") {
-				return ctx.Err()
+				return nil // ctx cancelled during backoff = clean detach
 			}
 			continue
 		}
@@ -310,7 +310,7 @@ func runConnectLoop(
 		fmt.Fprintf(os.Stderr,
 			"\r\n\x1b[2m[supervise: disconnected: %v]\x1b[0m\r\n", err)
 		if !waitBackoff(ctx, shared, "") {
-			return ctx.Err()
+			return nil // ctx cancelled during backoff = clean detach
 		}
 		// Drain any pending wake before redial so the new connection
 		// doesn't see a stale wake.
