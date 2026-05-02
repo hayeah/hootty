@@ -1,0 +1,38 @@
+tmux_session = "supervisor-dashboard"
+host         = "127.0.0.1"
+
+[[service]]
+type = "proxy"
+
+  [[service.routes]]
+  name         = "api"
+  path         = "/api/"
+  strip_prefix = true
+  type         = "exec"
+  command      = [
+    "./bin/supervise", "serve",
+    "--port", "$${PORT}",
+    "--addr", "127.0.0.1",
+    "--state-dir", ".supervise",
+  ]
+    [service.routes.health]
+    type     = "http"
+    path     = "/healthz"
+    interval = "200ms"
+    timeout  = "10s"
+
+  [[service.routes]]
+  name    = "vite"
+  path    = "/"
+  type    = "exec"
+  cwd     = "packages/supervisor-webui"
+  command = [
+    "pnpm", "exec", "vp", "dev",
+    "--port", "$${PORT}",
+    "--strictPort",
+    "--host", "127.0.0.1",
+  ]
+    [service.routes.health]
+    type     = "tcp"
+    interval = "200ms"
+    timeout  = "60s"

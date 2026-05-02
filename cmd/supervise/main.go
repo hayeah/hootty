@@ -32,6 +32,8 @@ func main() {
 		err = cmdResolve(args)
 	case "attach":
 		os.Exit(cmdAttach(args))
+	case "serve":
+		err = cmdServe(args)
 	case "__supervise":
 		err = cmdSupervise(args)
 	case "-h", "--help", "help":
@@ -57,6 +59,7 @@ Usage:
   supervise resolve [--state-dir <d>] <id-or-prefix>
   supervise attach  [--state-dir <d>] [--no-full-replay]
                     [--prefix-key <key>] <id-or-prefix>
+  supervise serve   [--state-dir <d>] --port <p> [--addr 127.0.0.1] [--prefix /api]
 
 The session state directory is <state-dir>/<key>/. The supervisor
 serves rpc.sock and writes pty.log inside it. --state-dir defaults
