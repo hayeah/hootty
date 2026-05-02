@@ -70,7 +70,8 @@ Anywhere a session key is accepted, you can pass either the full id
 or any unique prefix (minimum 3 characters). Ambiguous prefixes
 return an error listing the matches.
 
-In an attach: <prefix>d detaches; <prefix><prefix> sends a literal
-prefix byte; <prefix>? prints help. Default prefix is C-b.
+In an attach (mosh-style): <prefix>. detaches; <prefix>^ sends a
+literal prefix byte; <prefix>Ctrl-Z suspends supervise attach (resume
+with fg); <prefix>? prints help. Default prefix is C-^ (Ctrl-^, 0x1e).
 `)
 }

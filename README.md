@@ -131,15 +131,17 @@ Initial replay modes:
   the current screen + scrollback as the first frame, then live.
   Faster attach; no native scrollback.
 
-Inside an attach, a tmux-style prefix key introduces commands. The
-default is `C-b` (overridable via `--prefix-key C-a`, `--prefix-key
-0x1c`, …). Printable bytes are rejected at flag-parse time.
+Inside an attach, a mosh-style prefix key introduces commands. The
+default is `C-^` (Ctrl-^, 0x1e — same as mosh; chosen so it does not
+collide with tmux's `C-b`). Override via `--prefix-key C-a`,
+`--prefix-key 0x1c`, …; printable bytes are rejected at flag-parse time.
 
 | sequence              | action                                            |
 | --------------------- | ------------------------------------------------- |
-| `<prefix> d`          | detach (clean exit 0)                             |
-| `<prefix> ?`          | print one-line help on stderr, stay attached     |
-| `<prefix> <prefix>`   | send literal prefix byte to remote                |
+| `<prefix> .`          | detach (clean exit 0)                             |
+| `<prefix> ^`          | send literal prefix byte to remote                |
+| `<prefix> Ctrl-Z`     | suspend `supervise attach` (SIGTSTP; `fg` resumes) |
+| `<prefix> ?`          | print one-line help on stderr, stay attached      |
 
 Exit codes: `0` clean detach, `1` protocol/dial error, `2` argument
 error (or `404`/`409` from a remote `attach-raw`), `130` terminated by
@@ -173,7 +175,7 @@ Auto-reconnect (default on `--host`, opt out with `--no-reconnect`):
 - Termios stays raw across drops. On reconnect the client sends a fresh
   `Hello` with the current cols/rows; default `--full-replay` repaints
   the screen so the disconnect line is overwritten naturally.
-- `<prefix>d` detaches cleanly even mid-disconnect.
+- `<prefix>.` detaches cleanly even mid-disconnect.
 - A 404 (no session matched) or 409 (ambiguous prefix) on the upgrade
   response surfaces as exit 2 with the server's message.
 

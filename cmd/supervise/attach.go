@@ -43,7 +43,7 @@ import (
 //
 // Exit codes:
 //
-//	0   clean detach (server EOF after normal child exit, <prefix>d,
+//	0   clean detach (server EOF after normal child exit, <prefix>.,
 //	    or remote drop with --no-reconnect)
 //	1   protocol error, dial failure on first connect, bad state dir
 //	2   argument error (no session matched, ambiguous prefix, bad
@@ -61,22 +61,23 @@ func cmdAttach(args []string) int {
   --no-full-replay       send a libghostty snapshot instead of streaming pty.log
   --no-reconnect         exit on first drop instead of auto-reconnecting
                          (--host only; ignored for local attach)
-  --prefix-key <key>     command prefix byte (default: C-b). Forms: C-b, ^b,
-                         0x02, or a single ASCII control byte.
+  --prefix-key <key>     command prefix byte (default: C-^). Forms: C-^, ^^,
+                         0x1e, or a single ASCII control byte.
 
-Inside an attach: <prefix>d detaches; <prefix><prefix> sends a literal
-prefix byte to the remote; <prefix>? prints help.
+Inside an attach (mosh-style): <prefix>. detaches; <prefix>^ sends a
+literal prefix byte to the remote; <prefix>Ctrl-Z suspends supervise
+attach (resume with fg); <prefix>? prints help.
 
 During a remote disconnect: backoff is 1,2,4,8,16,30s capped at 30s and
 retries forever. Press any key to wake the backoff and retry now.
-<prefix>d still detaches cleanly.
+<prefix>. still detaches cleanly.
 `)
 	}
 	host := fs.String("host", "", "remote `supervise serve` host (host:port or URL)")
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
 	noFullReplay := fs.Bool("no-full-replay", false, "send a libghostty snapshot instead of streaming pty.log")
 	noReconnect := fs.Bool("no-reconnect", false, "exit on first drop instead of auto-reconnecting (--host only)")
-	prefixSpec := fs.String("prefix-key", "C-b", "command prefix byte (e.g. C-b, ^a, 0x1c)")
+	prefixSpec := fs.String("prefix-key", "C-^", "command prefix byte (e.g. C-^, ^a, 0x1c)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -415,7 +416,14 @@ func runSession(
 // runStdinFSM reads stdin one byte at a time and runs the prefix-key
 // state machine. When connected, byte events are forwarded as
 // MsgInput frames; when disconnected, they're dropped silently and
-// signal a reconnect-wake. <prefix>d cancels the outer ctx.
+// signal a reconnect-wake. <prefix>. cancels the outer ctx.
+//
+// Command vocabulary mirrors mosh:
+//
+//	<prefix> .       detach (cancel ctx)
+//	<prefix> ^       send a literal prefix byte to the remote
+//	<prefix> Ctrl-Z  SIGTSTP self (resume with fg)
+//	<prefix> ?       print one-line help on stderr
 func runStdinFSM(ctx context.Context, prefix byte, shared *sharedSession, cancel context.CancelFunc) {
 	type readResult struct {
 		b   byte
@@ -459,16 +467,18 @@ func runStdinFSM(ctx context.Context, prefix byte, shared *sharedSession, cancel
 				shared.sendInputOrWake(b)
 			case stateAfterPref:
 				switch b {
-				case prefix:
+				case '^':
 					// Literal prefix: send if connected, drop if not
 					// (no wake — this is data, not a "user is here" signal).
 					shared.sendIfConnected(attachwire.MsgInput, []byte{prefix})
-				case 'd':
+				case '.':
 					cancel()
 					return
+				case 0x1a: // Ctrl-Z: suspend self, resume with fg
+					_ = syscall.Kill(os.Getpid(), syscall.SIGTSTP)
 				case '?':
 					fmt.Fprintln(os.Stderr,
-						"\r\nsupervise attach: <prefix>d=detach, <prefix><prefix>=literal, <prefix>?=help\r")
+						"\r\nsupervise attach commands: \".\" detach, \"^\" literal prefix, \"Ctrl-Z\" suspend, \"?\" help\r")
 				default:
 					// silent ignore
 				}
