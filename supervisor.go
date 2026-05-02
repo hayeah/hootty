@@ -28,7 +28,7 @@ var chdirMu sync.Mutex
 //     <StateDir>/<Key>/.
 //   - Service: the thing to run. Runner.Run calls Service.Run once
 //     and returns whatever it returns.
-//   - PTY: the terminal transport (LibghosttyPTY today). Must be
+//   - PTY: the terminal transport (*LibghosttyPTY). Must be
 //     non-nil — the Service reaches it via super.PTY().
 //
 // Everything else (restart policy, briefing replay, signal-specific
@@ -37,7 +37,7 @@ type SupervisorConfig struct {
 	StateDir string
 	Key      string
 	Service  Service
-	PTY      PTY
+	PTY      *LibghosttyPTY
 }
 
 // Runner is the concrete supervisor entry point. Implements the
@@ -81,7 +81,7 @@ func (r *Runner) UpdateState(state any) error {
 
 // PTY implements Supervisor. Returns the terminal transport chosen
 // at construction time.
-func (r *Runner) PTY() PTY { return r.cfg.PTY }
+func (r *Runner) PTY() *LibghosttyPTY { return r.cfg.PTY }
 
 // Mux implements Supervisor. The library registers default handlers
 // on it (/state, /events); Services may add more during Run.
@@ -130,14 +130,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	r.log.Info("acquired flock", "dir", stateDir)
 
 	r.registerDefaultRoutes()
-
-	// If the PTY impl wants to contribute routes (LibghosttyPTY
-	// adds /pty/*), give it the mux now.
-	if reg, ok := r.cfg.PTY.(interface {
-		RegisterRoutes(mux *http.ServeMux)
-	}); ok {
-		reg.RegisterRoutes(r.mux)
-	}
+	r.cfg.PTY.RegisterRoutes(r.mux)
 
 	sock, err := r.listenSocket(stateDir)
 	if err != nil {

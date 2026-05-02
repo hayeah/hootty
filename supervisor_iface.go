@@ -6,9 +6,7 @@ import "net/http"
 //
 // A value implementing this interface is passed to Service.Run as
 // its second argument; it lives only for the duration of that call.
-// The concrete implementation is *Runner (see runner.go, forthcoming
-// in the PTY-backend refactor — currently still shaped as the
-// pre-refactor struct in supervisor.go).
+// The concrete implementation is *Runner.
 //
 // Three affordances, each scoped to "infra the Service doesn't want
 // to reimplement":
@@ -17,16 +15,15 @@ import "net/http"
 //     state.json and fan out to SSE subscribers on /events. This is
 //     how Services tell the outside world what they're doing.
 //
-//   - PTY: the terminal transport configured at Supervisor
-//     construction time. The shipped impl is LibghosttyPTY; the
-//     interface lets consumers swap it in tests. Services use this
-//     to send keys / capture the screen / write raw bytes.
+//   - PTY: the *LibghosttyPTY configured at Supervisor construction
+//     time. Services use it to capture the screen / write raw bytes
+//     into the master.
 //
 //   - Mux: the library-owned http.ServeMux served on
 //     <StateDir>/<Key>/rpc.sock. Default library routes: /state,
-//     /events, plus whatever the PTY impl contributes (libghostty
-//     adds /pty/*). Services may register additional routes
-//     (agentboss adds /lease, /lease-release).
+//     /events, plus the LibghosttyPTY's /pty/* routes. Services
+//     may register additional routes (agentboss adds /lease,
+//     /lease-release).
 //
 // Services do NOT receive a handle to the Runner or the library's
 // internal state (Writer, flock, signal channels). Those are infra.
@@ -41,7 +38,7 @@ type Supervisor interface {
 
 	// PTY returns the session's terminal transport. Constant for
 	// the lifetime of the Runner — chosen at construction time.
-	PTY() PTY
+	PTY() *LibghosttyPTY
 
 	// Mux is the library-managed http.ServeMux. Safe to register
 	// additional handlers on during Service.Run. The library

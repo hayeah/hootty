@@ -65,7 +65,6 @@ server.
 | `/pty/stream`     | GET    | Chunked binary: VT snapshot + live PTY bytes.                 |
 | `/pty/input`      | POST   | Body bytes → PTY master (raw passthrough).                    |
 | `/pty/resize`     | POST   | `{cols, rows}` JSON → resize.                                 |
-| `/pty/send-keys`  | POST   | `{keys: ["C-c", "Enter", ...]}` JSON → encoded key bytes.     |
 
 Plus the always-present library routes:
 

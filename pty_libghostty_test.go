@@ -143,12 +143,9 @@ func TestLibghosttyRecorderRoundtrip(t *testing.T) {
 	_ = slave.Close()
 }
 
-// TestLibghosttyPTYSendKeysLiteral exercises SendKeys's literal-
-// fallback path: an unknown name is written byte-for-byte to the
-// master. (Encoded paths go through libghostty's KeyEncoder; we
-// cover those at the e2e level — the bash signal-on-Ctrl-C in the
-// supervise smoke transcript is the proof.)
-func TestLibghosttyPTYSendKeysLiteral(t *testing.T) {
+// TestLibghosttyPTYWriteRoundtrip exercises Write: bytes handed to
+// the master are observable on the slave end of the pair.
+func TestLibghosttyPTYWriteRoundtrip(t *testing.T) {
 	master, slave, err := pty.Open()
 	if err != nil {
 		t.Fatalf("pty.Open: %v", err)
@@ -164,8 +161,8 @@ func TestLibghosttyPTYSendKeysLiteral(t *testing.T) {
 
 	// Trailing newline so the slave's line-discipline ICANON mode
 	// hands the buffered line to the reader.
-	if err := p.SendKeys("hello\n"); err != nil {
-		t.Fatalf("SendKeys: %v", err)
+	if err := p.Write([]byte("hello\n")); err != nil {
+		t.Fatalf("Write: %v", err)
 	}
 
 	type res struct {
@@ -181,32 +178,9 @@ func TestLibghosttyPTYSendKeysLiteral(t *testing.T) {
 	select {
 	case r := <-out:
 		if !strings.Contains(string(r.buf), "hello") {
-			t.Errorf("literal SendKeys: got %q want substring %q", string(r.buf), "hello")
+			t.Errorf("Write roundtrip: got %q want substring %q", string(r.buf), "hello")
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for slave to receive SendKeys literal bytes")
-	}
-}
-
-// TestKeyNameToCode is a unit test for the tmux-style key parser.
-func TestKeyNameToCode(t *testing.T) {
-	cases := []struct {
-		name  string
-		known bool
-	}{
-		{"Enter", true},
-		{"Tab", true},
-		{"Escape", true},
-		{"C-c", true},   // letter+ctrl
-		{"C-M-Left", true}, // arrow + ctrl + meta
-		{"F12", true},
-		{"hello", false},      // multi-char literal → fallback
-		{"unknown-x", false},
-	}
-	for _, c := range cases {
-		_, _, known := keyNameToCode(c.name)
-		if known != c.known {
-			t.Errorf("keyNameToCode(%q): known=%v want %v", c.name, known, c.known)
-		}
+		t.Fatal("timed out waiting for slave to receive Write bytes")
 	}
 }
