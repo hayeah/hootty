@@ -76,13 +76,24 @@ Plus the always-present library routes:
 ## `supervise` CLI
 
 ```sh
-supervise run --state-dir <dir> --key <key> -- <cmd> [args...]
+supervise run     --state-dir <dir> [--key <key>] -- <cmd> [args...]
+supervise list    --state-dir <dir>
+supervise resolve --state-dir <dir> <id-or-prefix>
 ```
 
-Opens a PTY pair, forks an internal supervisor process (with the master
-on fd 3 and stdio = slave), serves the mux on `<dir>/<key>/rpc.sock`. The
-supervisor holds a flock on `<dir>/<key>/` for the lifetime of the
-supervised child.
+`run` opens a PTY pair, forks an internal supervisor process (with the
+master on fd 3 and stdio = slave), and serves the mux on
+`<dir>/<key>/rpc.sock`. The supervisor holds a flock on `<dir>/<key>/`
+for the lifetime of the supervised child.
+
+If `--key` is omitted, `supervise` generates a random short id (3–8
+chars drawn from `0-9a-z` minus `l` and `o`, collision-checked against
+existing sessions). The chosen key is printed on stdout.
+
+Anywhere a session key is accepted (including `resolve`), you can pass
+either the full id or any unique prefix (minimum 3 characters,
+case-insensitive). Ambiguous prefixes fail with an error listing the
+matching ids; this is what makes the random ids ergonomic to use.
 
 ## Future work (out of scope here)
 
