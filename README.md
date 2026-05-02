@@ -82,6 +82,7 @@ supervise list    [--state-dir <dir>]
 supervise resolve [--state-dir <dir>] <id-or-prefix>
 supervise attach  [--state-dir <dir>] [--no-full-replay]
                   [--prefix-key <key>] <id-or-prefix>
+supervise serve   [--state-dir <dir>] --port <p> [--addr 127.0.0.1] [--prefix /api]
 ```
 
 `--state-dir` defaults to `~/.supervise` for every subcommand.
@@ -141,6 +142,57 @@ default is `C-b` (overridable via `--prefix-key C-a`, `--prefix-key
 
 Exit codes: `0` clean detach, `1` protocol/dial error, `2` argument
 error, `130` terminated by SIGINT/SIGTERM/SIGHUP we trapped.
+
+### `supervise serve`
+
+`serve` is a fan-out HTTP server over the same `--state-dir`. It
+exposes a session-keyed REST + WebSocket surface that an external
+UI can drive without dialing each session's `rpc.sock` directly
+(the browser cannot speak unix-socket).
+
+```sh
+supervise serve --port 8080 --state-dir ~/.supervise [--prefix /api]
+```
+
+Routes (mounted at the bare path and — if `--prefix` is set — at
+`<prefix><path>` too, so the same binary works behind a
+`strip_prefix=false` proxy and on direct probing):
+
+| Method | Path                        | Behaviour                                                        |
+|--------|-----------------------------|------------------------------------------------------------------|
+| GET    | `/sessions`                 | `{sessions: [{...StateFile, alive}]}`                            |
+| POST   | `/sessions`                 | `{cmd \| argv, key?}` → forks `supervise __supervise`            |
+| GET    | `/sessions/{key}`           | state.json (alias of `/state`)                                  |
+| DELETE | `/sessions/{key}`           | SIGTERM the supervisor by pid (204)                              |
+| GET    | `/sessions/{key}/state`     | state.json                                                       |
+| GET    | `/sessions/{key}/events`    | SSE proxy of upstream `/events`                                  |
+| GET    | `/sessions/{key}/attach`    | WebSocket bridge to upstream `/attach`                           |
+| GET    | `/healthz`                  | liveness                                                         |
+
+The WebSocket bridge speaks browser-friendly framing —
+binary frames carry PTY bytes both directions, and a text frame
+`{"type":"resize","cols":N,"rows":N}` is translated into an
+`attachwire.MsgSize` upstream — and terminates the
+`supervise-attach/1` HTTP-Upgrade protocol on the rpc.sock side.
+
+### Example dashboard
+
+`packages/supervisor-webui/` is an example React app that renders
+the session list and a live terminal pane against `supervise
+serve`. To run it locally with vite + the API behind a single
+proxy port, point [`devportv3`](https://github.com/hayeah/devportv3)
+at the included `devport.toml`:
+
+```sh
+make build           # → bin/supervise
+pnpm install
+devport up           # foreground; or `--daemon` for background
+# proxy URL is printed in the up summary
+```
+
+The `@hayeah/supervisor-termui` package extracts the terminal
+widget (ghostty-web canvas + AttachStream byte-pipe contract) so
+it can be reused in other dashboards.
 
 ## Future work (out of scope here)
 
