@@ -15,8 +15,10 @@ import (
 // mutex is defensive against tests that might Write from multiple
 // goroutines.
 type Recorder struct {
-	mu sync.Mutex
-	w  io.WriteCloser
+	mu   sync.Mutex
+	path string
+	w    io.WriteCloser
+	n    int64
 }
 
 // NewRecorder opens (or creates+truncates) the file at path for the
@@ -26,7 +28,7 @@ func NewRecorder(path string) (*Recorder, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Recorder{w: f}, nil
+	return &Recorder{w: f, path: path}, nil
 }
 
 // Write appends data to the recording. Returns the number of bytes
@@ -37,7 +39,29 @@ func (r *Recorder) Write(data []byte) (int, error) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.w.Write(data)
+	n, err := r.w.Write(data)
+	r.n += int64(n)
+	return n, err
+}
+
+// Size returns the number of bytes written so far. Used by the
+// attach handler to checkpoint pty.log replay against the live
+// subscriber feed.
+func (r *Recorder) Size() int64 {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.n
+}
+
+// Path returns the on-disk path of the recording.
+func (r *Recorder) Path() string {
+	if r == nil {
+		return ""
+	}
+	return r.path
 }
 
 // Close flushes and closes the underlying file. Safe to call
