@@ -1,0 +1,86 @@
+{
+  "alphabet": "0123456789abcdefghijkmnpqrstuvwxyz",
+  "alphabet_size": 34,
+  "min_length": 3,
+  "max_length": 8,
+  "min_query_length": 3,
+
+  "generate_tests": [
+    {
+      "name": "empty existing set",
+      "existing": [],
+      "expect": "any 3-char id from alphabet"
+    },
+    {
+      "name": "no collision with existing",
+      "existing": ["a3f", "b7k"],
+      "expect": "3-char id not in existing"
+    }
+  ],
+
+  "resolve_tests": [
+    {
+      "name": "exact match",
+      "query": "a3f",
+      "candidates": ["a3f", "a3g", "b7k"],
+      "expected": "a3f"
+    },
+    {
+      "name": "unique prefix",
+      "query": "b7k",
+      "candidates": ["a3f", "a3g", "b7k"],
+      "expected": "b7k"
+    },
+    {
+      "name": "case insensitive exact",
+      "query": "DEA",
+      "candidates": ["deadbeef", "cafebabe"],
+      "expected": "deadbeef"
+    },
+    {
+      "name": "case insensitive prefix",
+      "query": "CAF",
+      "candidates": ["deadbeef", "cafebabe"],
+      "expected": "cafebabe"
+    },
+    {
+      "name": "longer prefix",
+      "query": "A1B2C3D4-E",
+      "candidates": ["A1B2C3D4-E5F6-7890", "A1B2C3D4-FFFF-1111", "DEADBEEF-0000"],
+      "expected": "A1B2C3D4-E5F6-7890"
+    },
+    {
+      "name": "exact match wins over prefix of another",
+      "query": "abc",
+      "candidates": ["abc", "abcdef"],
+      "expected": "abc"
+    }
+  ],
+
+  "resolve_error_tests": [
+    {
+      "name": "too short",
+      "query": "ab",
+      "candidates": ["abc", "abd"],
+      "error": "IDTooShortError"
+    },
+    {
+      "name": "ambiguous prefix",
+      "query": "a3",
+      "candidates": ["a3f", "a3g", "b7k"],
+      "error": "IDTooShortError"
+    },
+    {
+      "name": "ambiguous 3-char prefix",
+      "query": "A1B",
+      "candidates": ["A1B2C3D4-E5F6", "A1B2C3D4-FFFF", "DEADBEEF"],
+      "error": "AmbiguousIDError"
+    },
+    {
+      "name": "no match",
+      "query": "zzz",
+      "candidates": ["a3f", "b7k"],
+      "error": "IDNotFoundError"
+    }
+  ]
+}
