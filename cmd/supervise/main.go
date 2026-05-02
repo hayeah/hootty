@@ -6,7 +6,7 @@
 // Subcommands:
 //
 //	supervise run [flags] -- <cmd> [args...]    spawn a session
-//	supervise __supervise [flags] -- <cmd> ...  (internal worker)
+//	supervise __supervise [flags] -- <cmd> ...  (internal supervisor)
 package main
 
 import (

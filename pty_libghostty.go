@@ -20,14 +20,14 @@ import (
 // goroutine).
 //
 // Construction flow: the parent process (e.g. `supervise run`) opens
-// a PTY pair via github.com/creack/pty, forks the worker with
+// a PTY pair via github.com/creack/pty, forks the supervisor with
 // Stdin/Stdout/Stderr = slave and ExtraFiles = [master]. Inside the
-// worker, the master arrives at fd 3:
+// supervisor, the master arrives at fd 3:
 //
 //	master := os.NewFile(3, "pty-master")
 //	pty, err := NewLibghosttyPTY(master, cols, rows, opts...)
 //
-// The Service's exec.Cmd.Start inherits stdio from the worker, so
+// The Service's exec.Cmd.Start inherits stdio from the supervisor, so
 // the child ends up inside the PTY automatically.
 //
 // Recorder: the dispatcher tees every chunk it receives to the

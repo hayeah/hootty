@@ -36,7 +36,7 @@ func (s *RunCmdService) cmdString() string {
 }
 
 // Run implements supervisor.Service. Stdin/Stdout/Stderr are
-// inherited from the worker — already on the PTY slave. Setctty
+// inherited from the supervisor — already on the PTY slave. Setctty
 // on the child is what lets master-side TIOCSWINSZ keep working
 // after the child's job-control configures the fg pgrp; without
 // it macOS surfaces EIO on the master ioctl as soon as the shell

@@ -19,13 +19,13 @@ import (
 )
 
 // cmdRun opens a PTY pair, forks `supervise __supervise` with the
-// slave as stdio and the master on fd 3, then exits — the worker
+// slave as stdio and the master on fd 3, then exits — the supervisor
 // process keeps running in its own session and serves rpc.sock.
 //
-// `supervise run` is intentionally fire-and-forget: the worker holds
-// the flock and the unix socket; clients (a future `attach` CLI,
-// curl, an embedding HTTP server) talk to the worker through
-// rpc.sock.
+// `supervise run` is intentionally fire-and-forget: the supervisor
+// holds the flock and the unix socket; clients (a future `attach`
+// CLI, curl, an embedding HTTP server) talk to the supervisor
+// through rpc.sock.
 func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
@@ -86,27 +86,27 @@ func cmdRun(args []string) error {
 	cmd.Stdout = slave
 	cmd.Stderr = slave
 	cmd.ExtraFiles = []*os.File{master}
-	// Worker runs in its own session (Setsid). The Service inside
-	// will Setctty to claim the slave; keeping the worker
-	// session-less for this tty is what lets master-side
+	// Supervisor runs in its own session (Setsid). The Service
+	// inside will Setctty to claim the slave; keeping the
+	// supervisor session-less for this tty is what lets master-side
 	// TIOCSWINSZ keep working after the child takes the fg pgrp.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := cmd.Start(); err != nil {
 		master.Close()
 		slave.Close()
-		return fmt.Errorf("fork worker: %w", err)
+		return fmt.Errorf("fork supervisor: %w", err)
 	}
 
 	// Parent is done with both ends — child has its own dups.
 	_ = slave.Close()
 	_ = master.Close()
 
-	// Wait for the worker to open its socket so we can promise the
-	// caller a usable session before returning.
+	// Wait for the supervisor to open its socket so we can promise
+	// the caller a usable session before returning.
 	sockPath := filepath.Join(*stateDir, *key, "rpc.sock")
 	if err := waitForSocket(sockPath, 3*time.Second); err != nil {
-		return fmt.Errorf("run: worker did not open socket: %w", err)
+		return fmt.Errorf("run: supervisor did not open socket: %w", err)
 	}
 
 	fmt.Fprintf(os.Stderr, "supervise: session %q started (state-dir=%s)\n", *key, *stateDir)

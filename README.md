@@ -79,9 +79,10 @@ Plus the always-present library routes:
 supervise run --state-dir <dir> --key <key> -- <cmd> [args...]
 ```
 
-Opens a PTY pair, forks an internal worker (with the master on fd 3 and
-stdio = slave), serves the mux on `<dir>/<key>/rpc.sock`. The worker holds
-a flock on `<dir>/<key>/` for the lifetime of the supervised child.
+Opens a PTY pair, forks an internal supervisor process (with the master
+on fd 3 and stdio = slave), serves the mux on `<dir>/<key>/rpc.sock`. The
+supervisor holds a flock on `<dir>/<key>/` for the lifetime of the
+supervised child.
 
 ## Future work (out of scope here)
 

@@ -15,9 +15,10 @@ import (
 	"github.com/hayeah/supervisor"
 )
 
-// cmdSupervise is the internal worker that holds the flock, owns the
-// PTY emulator + recorder, and serves rpc.sock. It is not meant to
-// be invoked by hand; `supervise run` forks this with:
+// cmdSupervise is the internal supervisor process that holds the
+// flock, owns the PTY emulator + recorder, and serves rpc.sock. It
+// is not meant to be invoked by hand; `supervise run` forks this
+// with:
 //
 //   - stdin/stdout/stderr pointing at the PTY slave
 //   - fd 3 = the PTY master (ExtraFiles[0])
@@ -37,9 +38,10 @@ func cmdSupervise(args []string) error {
 		return errors.New("__supervise: missing command after --")
 	}
 
-	// Worker stderr is the PTY slave; the library's slog default
-	// would leak supervisor-internal log lines into the captured
-	// stream. Send slog to a file inside the state dir instead.
+	// Supervisor stderr is the PTY slave; the library's slog
+	// default would leak supervisor-internal log lines into the
+	// captured stream. Send slog to a file inside the state dir
+	// instead.
 	logPath := filepath.Join(*stateDir, *key, "supervisor.log")
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		return fmt.Errorf("mkdir state dir: %w", err)
