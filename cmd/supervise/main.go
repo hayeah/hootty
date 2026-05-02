@@ -57,8 +57,8 @@ Usage:
   supervise run     [--state-dir <d>] [--key <k>] -- <cmd> [args...]
   supervise list    [--state-dir <d>]
   supervise resolve [--state-dir <d>] <id-or-prefix>
-  supervise attach  [--host <addr>] [--state-dir <d>] [--no-full-replay]
-                    [--no-reconnect] [--prefix-key <key>] <id-or-prefix>
+  supervise attach  [--host <addr>] [--state-dir <d>] [--no-reconnect]
+                    [--prefix-key <key>] <id-or-prefix>
   supervise serve   [--state-dir <d>] --bind <host:port> [--prefix /api]
 
 The session state directory is <state-dir>/<key>/. The supervisor

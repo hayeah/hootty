@@ -80,8 +80,7 @@ Plus the always-present library routes:
 supervise run     [--state-dir <dir>] [--key <key>] -- <cmd> [args...]
 supervise list    [--state-dir <dir>]
 supervise resolve [--state-dir <dir>] <id-or-prefix>
-supervise attach  [--host <addr>] [--state-dir <dir>]
-                  [--no-full-replay] [--no-reconnect]
+supervise attach  [--host <addr>] [--state-dir <dir>] [--no-reconnect]
                   [--prefix-key <key>] <id-or-prefix>
 supervise serve   [--state-dir <dir>] --bind <host:port> [--prefix /api]
 ```
@@ -121,15 +120,28 @@ PTY winsize is negotiated as `min(cols)`, `min(rows)` across all
 connected attaches; the negotiated size is broadcast back to every
 attach as a `Size` frame whenever it changes.
 
-Initial replay modes:
+Initial replay: a libghostty-formatted snapshot of the active screen
+(viewport + scrollback up to `max_scrollback`, plus cursor position,
+active SGR style, and non-default modes) is sent as the first frame,
+then the connection switches to live. The snapshot subscribe pair is
+race-free — both happen on the dispatcher goroutine, so live chunks
+delivered after subscribe carry no overlap with the snapshot.
 
-- **full replay (default)** — pump the entire `<dir>/<key>/pty.log`
-  to the client before switching to live, race-free at the cutover
-  (the recorder offset is captured atomically with subscribing to
-  the live tee). Gives the local terminal native scrollback.
-- **`--no-full-replay`** — send a libghostty-formatted snapshot of
-  the current screen + scrollback as the first frame, then live.
-  Faster attach; no native scrollback.
+The previous `--no-full-replay` flag and the alternative `pty.log`
+replay arm were removed. Replaying raw `pty.log` re-issued every
+terminal-query escape the child ever sent (`DA`, `DSR`, `OSC 11 ?`,
+…) which the user's real terminal would dutifully answer back into
+the child's stdin — the same root cause as the live "junk chars
+after tmux detach" symptom, just spread across the whole session.
+The recorder still writes `pty.log` for offline analysis; it's just
+not the source for attach replay.
+
+Live fanout strips terminal-query escape sequences before sending
+to the user's real terminal (the libghostty emulator on the
+supervisor already auto-replies, so a second answer from the user's
+terminal would inject duplicate bytes into the child's stdin). The
+recorder + emulator branch sees raw bytes; only the user-facing
+fanout is filtered. See `vtquery_stripper.go`.
 
 Inside an attach, a mosh-style prefix key introduces commands. The
 default is `C-^` (Ctrl-^, 0x1e — same as mosh; chosen so it does not
@@ -173,8 +185,8 @@ Auto-reconnect (default on `--host`, opt out with `--no-reconnect`):
   reconnecting in 5s — press any key to retry now]`. Pressing any
   non-prefix key wakes the backoff and retries immediately.
 - Termios stays raw across drops. On reconnect the client sends a fresh
-  `Hello` with the current cols/rows; default `--full-replay` repaints
-  the screen so the disconnect line is overwritten naturally.
+  `Hello` with the current cols/rows; the server snapshot repaints the
+  screen so the disconnect line is overwritten naturally.
 - `<prefix>.` detaches cleanly even mid-disconnect.
 - A 404 (no session matched) or 409 (ambiguous prefix) on the upgrade
   response surfaces as exit 2 with the server's message.

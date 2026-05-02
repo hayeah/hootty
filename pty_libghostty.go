@@ -49,11 +49,21 @@ type LibghosttyPTY struct {
 	// subs. Send-only from outside the dispatcher goroutine.
 	actions chan func()
 
-	subs map[chan []byte]struct{} // owned by dispatcher goroutine
-	rec  *Recorder                // owned by dispatcher goroutine
+	subs map[chan []byte]*subscriber // owned by dispatcher goroutine
+	rec  *Recorder                   // owned by dispatcher goroutine
 
 	doneOnce sync.Once
 	done     chan struct{}
+}
+
+// subscriber bundles a per-attach query stripper with its delivery
+// channel. The stripper holds streaming state across chunk
+// boundaries: an escape sequence that begins in chunk N and
+// finishes in chunk N+1 is recognized correctly. One stripper per
+// subscriber so per-attach state never crosses connections.
+type subscriber struct {
+	ch       chan []byte
+	stripper vtQueryStripper
 }
 
 // LibghosttyOption configures a LibghosttyPTY at construction.
@@ -100,7 +110,7 @@ func NewLibghosttyPTY(master *os.File, cols, rows uint16, opts ...LibghosttyOpti
 		cols:    cols,
 		rows:    rows,
 		actions: make(chan func(), 64),
-		subs:    make(map[chan []byte]struct{}),
+		subs:    make(map[chan []byte]*subscriber),
 		rec:     o.rec,
 		done:    make(chan struct{}),
 	}
@@ -135,9 +145,9 @@ func (p *LibghosttyPTY) Close() error {
 		shutdown := make(chan struct{})
 		select {
 		case p.actions <- func() {
-			for ch := range p.subs {
+			for ch, sub := range p.subs {
 				delete(p.subs, ch)
-				close(ch)
+				close(sub.ch)
 			}
 			if p.term != nil {
 				p.term.Close()
@@ -214,9 +224,19 @@ func (p *LibghosttyPTY) readLoop() {
 				if p.term != nil {
 					p.term.VTWrite(chunk)
 				}
-				for ch := range p.subs {
+				// Per-subscriber strip pass: filter out terminal-
+				// query escape sequences (DA/DSR/CPR/XTVERSION/...)
+				// before fanout. The recorder + emulator above see
+				// the unfiltered bytes; only the user's real terminal
+				// is shielded from re-answering queries that the
+				// emulator already answered. See vtquery_stripper.go.
+				for _, sub := range p.subs {
+					filtered := sub.stripper.Filter(chunk)
+					if len(filtered) == 0 {
+						continue
+					}
 					select {
-					case ch <- chunk:
+					case sub.ch <- filtered:
 					default:
 						// Slow subscriber: drop. They re-sync on
 						// reattach via the snapshot prefix.
@@ -244,10 +264,12 @@ func (p *LibghosttyPTY) Write(data []byte) error {
 }
 
 // Capture returns a textual dump of the current screen. lines is
-// advisory and currently ignored (libghostty's formatter formats the
-// whole terminal — there is no row-range API). withEscapes=true
-// emits VT-replayable bytes (FormatterFormatVT); false emits plain
-// text (FormatterFormatPlain).
+// advisory and currently ignored: libghostty's formatter walks the
+// emulator's full active screen — viewport plus scrollback up to
+// max_scrollback rows — and there's no row-range slicing knob. The
+// scrollback ring cap is the only way to bound output. withEscapes
+// =true emits VT-replayable bytes (FormatterFormatVT); false emits
+// plain text (FormatterFormatPlain).
 func (p *LibghosttyPTY) Capture(lines int, withEscapes bool) (string, error) {
 	_ = lines
 	format := libghostty.FormatterFormatPlain
@@ -346,16 +368,49 @@ func (p *LibghosttyPTY) Size() (cols, rows uint16) {
 // Snapshot returns the current screen as VT-replayable bytes — the
 // first chunk of /pty/stream so subscribers render a faithful screen
 // before live bytes arrive.
+//
+// Includes scrollback (up to max_scrollback × cols), the cursor
+// position, the active SGR style, and any non-default terminal modes,
+// so a fresh terminal repaints the same picture the supervisor sees.
+//
+// Known limitation: when the child is on the alt screen (tmux, vim,
+// less, etc.) the snapshot is just the alt-screen contents — the
+// primary scrollback the supervisor recorded is preserved internally
+// but invisible to the formatter, and when the child later exits alt
+// the user's terminal restores its own (empty) primary. See
+// ~/Dropbox/notes/2026-05-02/supervise-alt-screen-scrollback-gap_claude.md.
 func (p *LibghosttyPTY) Snapshot() ([]byte, error) {
-	return p.FormatVT()
+	var out []byte
+	var ferr error
+	p.do(func() {
+		if p.term == nil {
+			ferr = errors.New("pty closed")
+			return
+		}
+		f, err := libghostty.NewFormatter(p.term,
+			libghostty.WithFormatterFormat(libghostty.FormatterFormatVT),
+			libghostty.WithFormatterTrim(true),
+			libghostty.WithFormatterExtraCursor(true),
+			libghostty.WithFormatterExtraStyle(true),
+			libghostty.WithFormatterExtraModes(true),
+		)
+		if err != nil {
+			ferr = err
+			return
+		}
+		defer f.Close()
+		out, ferr = f.Format()
+	})
+	return out, ferr
 }
 
 // subscribe registers a channel to receive live PTY bytes. Returns
 // the channel and a cancel function.
 func (p *LibghosttyPTY) subscribe() (<-chan []byte, func()) {
 	ch := make(chan []byte, 64)
+	sub := &subscriber{ch: ch}
 	p.do(func() {
-		p.subs[ch] = struct{}{}
+		p.subs[ch] = sub
 	})
 	cancel := func() {
 		p.do(func() {
@@ -382,9 +437,10 @@ func (p *LibghosttyPTY) subscribe() (<-chan []byte, func()) {
 // the subscription and closes the channel.
 func (p *LibghosttyPTY) SubscribeAtRecord() (<-chan []byte, int64, func()) {
 	ch := make(chan []byte, 256)
+	sub := &subscriber{ch: ch}
 	var offset int64
 	p.do(func() {
-		p.subs[ch] = struct{}{}
+		p.subs[ch] = sub
 		if p.rec != nil {
 			offset = p.rec.Size()
 		}
