@@ -193,3 +193,12 @@ func remoteResponseError(resp *http.Response) error {
 	}
 	return fmt.Errorf("remote: %s: %s", resp.Status, msg)
 }
+
+// hostFromHostport returns the host part of host:port for the TLS
+// SNI / cert-verify ServerName field.
+func hostFromHostport(hp string) string {
+	if h, _, err := net.SplitHostPort(hp); err == nil {
+		return h
+	}
+	return hp
+}

@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -11,7 +10,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -31,10 +29,11 @@ import (
 //
 //   - Local (default): dials <state-dir>/<key>/rpc.sock and performs
 //     the hoot-attach/1 HTTP/1.1 Upgrade.
-//   - Remote (`--host`): dials a `hoot serve` host over TCP (or
-//     TLS if the URL scheme is https://) and performs the same
-//     Upgrade against /sessions/<id>/attach-raw. Server resolves the
-//     short-id; the client passes its raw user-typed argument.
+//   - Remote (`--remote`): dials a `hoot serve` over http(s), or
+//     opens an ssh-backed tunnel to a remote `hoot serve`, then
+//     performs the same Upgrade against /sessions/<id>/attach-raw.
+//     Server resolves the short-id; the client passes its raw
+//     user-typed argument.
 //
 // The remote path supports automatic reconnect (default; `--no-reconnect`
 // to opt out). Termios stays raw across drops; on reconnect the client
@@ -47,19 +46,19 @@ import (
 //	    or remote drop with --no-reconnect)
 //	1   protocol error, dial failure on first connect, bad state dir
 //	2   argument error (no session matched, ambiguous prefix, bad
-//	    --prefix-key, --host parse error)
+//	    --prefix-key, --remote parse error)
 //	130 terminated by a trapped signal (SIGINT/SIGTERM/SIGHUP)
 func cmdAttach(args []string) int {
 	fs := flag.NewFlagSet("attach", flag.ContinueOnError)
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `usage: hoot attach [flags] <id-or-prefix>
 
-  --host <addr>          remote `+"`hoot serve`"+` host: bare host:port,
-                         http://host:port, or https://host:port
+  --remote <url>         remote `+"`hoot serve`"+` target: host:port,
+                         http://host:port, https://host:port, or ssh://host
   --state-dir <dir>      session state directory (default: ~/.hoot);
-                         only used for local attach (no --host)
+                         local sessions and ssh tunnel state
   --no-reconnect         exit on first drop instead of auto-reconnecting
-                         (--host only; ignored for local attach)
+                         (--remote only; ignored for local attach)
   --no-ascii-cinema-playback
                          skip asciicast history playback on first attach
   --ascii-cinema-playback-window <duration>
@@ -78,9 +77,9 @@ retries forever. Press any key to wake the backoff and retry now.
 <prefix>. still detaches cleanly.
 `)
 	}
-	host := fs.String("host", "", "remote `hoot serve` host (host:port or URL)")
+	remoteFlag := fs.String("remote", "", "remote target (host:port, http(s)://host:port, or ssh://host)")
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
-	noReconnect := fs.Bool("no-reconnect", false, "exit on first drop instead of auto-reconnecting (--host only)")
+	noReconnect := fs.Bool("no-reconnect", false, "exit on first drop instead of auto-reconnecting (--remote only)")
 	noAsciiCinemaPlayback := fs.Bool("no-ascii-cinema-playback", false, "skip asciicast history playback on first attach")
 	asciiCinemaPlaybackWindow := fs.Duration("ascii-cinema-playback-window", 5*time.Minute, "asciicast history window to replay (0 = full cast)")
 	asciiCinemaPlaybackSpeed := fs.Float64("ascii-cinema-playback-speed", 8, "asciicast playback speed multiplier")
@@ -117,15 +116,16 @@ retries forever. Press any key to wake the backoff and retry now.
 	var dial dialFn
 	var reconnect bool
 	var label attachLabel
-	if *host != "" {
-		base, err := parseHostFlag(*host)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "hoot attach: %v\n", err)
-			return 2
-		}
-		dial = remoteDialer(base, rest[0])
+	remote, err := parseRemoteFlag(*remoteFlag, *stateDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hoot attach: %v\n", err)
+		return 2
+	}
+	if remote != nil {
+		defer remote.Close()
+		dial = dialAttachRaw(remote, rest[0])
 		reconnect = !*noReconnect
-		label = attachLabel{Session: rest[0], Host: *host}
+		label = attachLabel{Session: rest[0], Host: remote.display}
 	} else {
 		store := session.NewStore(*stateDir)
 		state, err := store.Resolve(rest[0])
@@ -789,39 +789,6 @@ func localDialer(sockPath string) dialFn {
 	}
 }
 
-// remoteDialer returns a dialFn for the --host case. base is the
-// already-parsed http(s)://host:port URL; shortID is the user-typed
-// argument passed verbatim to the server for resolution.
-func remoteDialer(base *url.URL, shortID string) dialFn {
-	return func(ctx context.Context) (net.Conn, error) {
-		hostport := base.Host
-		var conn net.Conn
-		var err error
-		switch base.Scheme {
-		case "http":
-			var d net.Dialer
-			conn, err = d.DialContext(ctx, "tcp", hostport)
-		case "https":
-			d := &tls.Dialer{
-				Config: &tls.Config{ServerName: hostFromHostport(hostport)},
-			}
-			conn, err = d.DialContext(ctx, "tcp", hostport)
-		default:
-			return nil, fmt.Errorf("unsupported scheme %q", base.Scheme)
-		}
-		if err != nil {
-			return nil, err
-		}
-		target := *base
-		target.Path = "/sessions/" + shortID + "/attach-raw"
-		if err := upgradeAttachConn(conn, target.String()); err != nil {
-			conn.Close()
-			return nil, err
-		}
-		return conn, nil
-	}
-}
-
 // upgradeAttachConn writes the hoot-attach/1 HTTP/1.1 Upgrade
 // request to conn and reads the response. On 101 the conn is left
 // positioned at the first attachwire byte. On 404 / 409 returns a
@@ -887,43 +854,6 @@ func dialUnixSock(ctx context.Context, sockPath string) (net.Conn, error) {
 	}
 	defer os.Chdir(cwd)
 	return d.DialContext(ctx, "unix", filepath.Base(sockPath))
-}
-
-// parseHostFlag normalizes the --host argument into an http(s) URL.
-// Accepts:
-//
-//	"m4mini:20000"        → http://m4mini:20000
-//	"http://m4mini:20000" → http://m4mini:20000
-//	"https://m4mini:443"  → https://m4mini:443
-//
-// Path / query are stripped (we always target /sessions/.../attach-raw).
-func parseHostFlag(s string) (*url.URL, error) {
-	if !strings.Contains(s, "://") {
-		s = "http://" + s
-	}
-	u, err := url.Parse(s)
-	if err != nil {
-		return nil, fmt.Errorf("--host: %w", err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return nil, fmt.Errorf("--host: unsupported scheme %q", u.Scheme)
-	}
-	if u.Host == "" {
-		return nil, fmt.Errorf("--host: missing host")
-	}
-	u.Path = ""
-	u.RawQuery = ""
-	u.Fragment = ""
-	return u, nil
-}
-
-// hostFromHostport returns the host part of host:port for the TLS
-// SNI / cert-verify ServerName field.
-func hostFromHostport(hp string) string {
-	if h, _, err := net.SplitHostPort(hp); err == nil {
-		return h
-	}
-	return hp
 }
 
 // localSize returns local terminal cols/rows, or (0,0) if stdin is

@@ -82,6 +82,31 @@ func TestHTTPClientDialsRemoteAddress(t *testing.T) {
 	}
 }
 
+func TestDialAttachRawUsesRemotePath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sessions/abc/attach-raw" {
+			t.Fatalf("path = %q, want /sessions/abc/attach-raw", r.URL.Path)
+		}
+		if r.Header.Get("Upgrade") != "hoot-attach/1" {
+			t.Fatalf("Upgrade = %q, want hoot-attach/1", r.Header.Get("Upgrade"))
+		}
+		w.Header().Set("Upgrade", "hoot-attach/1")
+		w.Header().Set("Connection", "Upgrade")
+		w.WriteHeader(http.StatusSwitchingProtocols)
+	}))
+	defer server.Close()
+
+	r, err := parseRemoteFlag(server.Listener.Addr().String(), t.TempDir())
+	if err != nil {
+		t.Fatalf("parseRemoteFlag: %v", err)
+	}
+	conn, err := dialAttachRaw(r, "abc")(context.Background())
+	if err != nil {
+		t.Fatalf("dialAttachRaw: %v", err)
+	}
+	_ = conn.Close()
+}
+
 func TestSSHRemoteLocalhostHealthz(t *testing.T) {
 	if err := exec.Command("ssh", "-o", "BatchMode=yes", "localhost", "true").Run(); err != nil {
 		t.Skipf("passwordless ssh localhost unavailable: %v", err)
