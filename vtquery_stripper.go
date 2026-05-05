@@ -1,4 +1,4 @@
-package supervisor
+package session
 
 // queryStripper drops terminal-query escape sequences from a stream
 // of bytes flowing FROM the child PTY TO an attached client's real
@@ -8,8 +8,8 @@ package supervisor
 // Why: a terminal "query" is an RPC where the program writes an
 // escape sequence and expects the terminal to write a reply back into
 // the program's stdin (DA, DSR, CPR, XTVERSION, OSC color queries,
-// kitty-keyboard query, ENQ, …). Inside `supervise attach`, the
-// libghostty emulator on the supervisor already answers these; if we
+// kitty-keyboard query, ENQ, …). Inside `hoot attach`, the
+// libghostty emulator on the session already answers these; if we
 // also fan the queries out to the user's real ghostty, real ghostty
 // answers AGAIN and those reply bytes inject as input into the
 // child's stdin. The child gets two replies for every query; the

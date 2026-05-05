@@ -1,4 +1,4 @@
-tmux_session = "supervisor-dashboard"
+tmux_session = "hootty-dashboard"
 host         = "127.0.0.1"
 
 [[service]]
@@ -10,9 +10,9 @@ type = "proxy"
   strip_prefix = true
   type         = "exec"
   command      = [
-    "./bin/supervise", "serve",
+    "./bin/hoot", "serve",
     "--bind", "127.0.0.1:$${PORT}",
-    "--state-dir", ".supervise",
+    "--state-dir", ".hoot",
   ]
     [service.routes.health]
     type     = "http"
@@ -24,7 +24,7 @@ type = "proxy"
   name    = "vite"
   path    = "/"
   type    = "exec"
-  cwd     = "packages/supervisor-webui"
+  cwd     = "packages/hootty-webui"
   command = [
     "pnpm", "exec", "vp", "dev",
     "--port", "$${PORT}",

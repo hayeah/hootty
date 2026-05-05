@@ -1,4 +1,4 @@
-package supervisor
+package session
 
 import (
 	"encoding/json"
@@ -151,4 +151,3 @@ func (p *LibghosttyPTY) handleResize(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
-

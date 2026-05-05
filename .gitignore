@@ -6,5 +6,5 @@ node_modules/
 dist/
 .vite/
 .devport/
-.supervise/
+.hoot/
 devport.env

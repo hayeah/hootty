@@ -14,15 +14,15 @@ created: 2026-05-05T03:47:55Z
 >   type: open
 > ---
 >
-> Work in `~/github.com/hayeah/supervisor`.
+> Work in `~/github.com/hayeah/hootty`.
 >
 > When a client attaches while the child is on alt screen (tmux, vim, less, etc.), today only the alt-screen content is sent. The primary scrollback is preserved internally but never reaches the client — when the child later exits alt screen, the user's terminal restores its own (empty) primary screen and the recorded primary history is gone.
 >
 > **Goal:** on attach, deliver the full primary scrollback first, then enter alt screen and continue live. The user gets correct scrollback behavior regardless of which screen is active when they attach.
 >
 > **Required reading**:
-> - `/Users/me/Dropbox/notes/2026-05-02/supervise-attach-scrollback-spec_claude.md` — recently-shipped scrollback work; the "Known limitation: alt-screen attach loses primary scrollback" section explicitly punts this fix.
-> - `/Users/me/Dropbox/notes/2026-05-02/supervise-alt-screen-scrollback-gap_claude.md` — full analysis with Option A/B/C tradeoffs (parallel emulator, destructive toggle, format-while-alt API).
+> - `/Users/me/Dropbox/notes/2026-05-02/hoot-attach-scrollback-spec_claude.md` — recently-shipped scrollback work; the "Known limitation: alt-screen attach loses primary scrollback" section explicitly punts this fix.
+> - `/Users/me/Dropbox/notes/2026-05-02/hoot-alt-screen-scrollback-gap_claude.md` — full analysis with Option A/B/C tradeoffs (parallel emulator, destructive toggle, format-while-alt API).
 >
 > **Mandate**: really try to find a fourth option before falling back to A/B/C. Specifically:
 >
@@ -42,7 +42,7 @@ created: 2026-05-05T03:47:55Z
 > - [ ] implement per spec
 
 ## Todos
-- [x] check out and inspect `supervisor`, `go-libghostty`, and Ghostty source
+- [x] check out and inspect `session`, `go-libghostty`, and Ghostty source
 - [x] read required notes and write `spec.md`
 - [x] add primary-screen filter with unit tests — 6333014
 - [x] add primary mirror terminal lifecycle to `LibghosttyPTY` — d508dc3
@@ -52,7 +52,7 @@ created: 2026-05-05T03:47:55Z
 - [x] run verification and commit
 
 ## Agent log
-- 2026-05-05T04:15Z Read AGENT_LOOP, required notes, supervisor attach/PTY code, go-libghostty formatter/terminal wrappers, and Ghostty Zig formatter/screen internals. Wrote spec.md and proceeding end-to-end per boss note (no RFC stop).
+- 2026-05-05T04:15Z Read AGENT_LOOP, required notes, session attach/PTY code, go-libghostty formatter/terminal wrappers, and Ghostty Zig formatter/screen internals. Wrote spec.md and proceeding end-to-end per boss note (no RFC stop).
 - 2026-05-05T04:24Z Added primary-screen VT filter and tests for primary passthrough, alt suppression, chunk boundaries, legacy alt modes, and multi-param DECSET/DECRST. Commit 6333014.
 - 2026-05-05T04:29Z Wired primary-only libghostty terminal into PTY lifecycle, resized/closed it with the real terminal, and added SubscribeWithSnapshot so attach snapshots and live subscription registration are serialized. Commit d508dc3.
 - 2026-05-05T04:35Z Added replay tests proving alt-screen snapshots prefix primary scrollback before alt content and that a live alt-exit restores a populated client primary. Commit bd18049.
@@ -66,7 +66,7 @@ created: 2026-05-05T03:47:55Z
 
 ## Evidence
 
-Repo: `repos/github.com/hayeah/supervisor`
+Repo: `repos/github.com/hayeah/hootty`
 
 Commits:
 
@@ -79,10 +79,10 @@ Full suite:
 
 ```text
 $ go test ./...
-ok  	github.com/hayeah/supervisor	0.573s
-ok  	github.com/hayeah/supervisor/cmd/supervise	0.263s
-?   	github.com/hayeah/supervisor/internal/attachwire	[no test files]
-ok  	github.com/hayeah/supervisor/internal/shortid	(cached)
+ok  	github.com/hayeah/hootty	0.573s
+ok  	github.com/hayeah/hootty/cmd/hoot	0.263s
+?   	github.com/hayeah/hootty/internal/attachwire	[no test files]
+ok  	github.com/hayeah/hootty/internal/shortid	(cached)
 ```
 
 Targeted behavior suite:
@@ -112,7 +112,7 @@ $ go test -run 'TestVTPrimaryScreenFilter|TestLibghosttyPTYSnapshot_AltScreenInc
 === RUN   TestVTPrimaryScreenFilter_NonAltPrivateModesPassOnPrimary
 --- PASS: TestVTPrimaryScreenFilter_NonAltPrivateModesPassOnPrimary (0.00s)
 PASS
-ok  	github.com/hayeah/supervisor	0.205s
+ok  	github.com/hayeah/hootty	0.205s
 ```
 
 What the behavior tests prove:

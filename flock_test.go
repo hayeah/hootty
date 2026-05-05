@@ -1,4 +1,4 @@
-package supervisor
+package session
 
 import (
 	"os"
@@ -25,7 +25,7 @@ func TestAcquireAndProbe(t *testing.T) {
 	// Note: ProbeFlock from the same process opens a new fd, which gets
 	// its own independent lock on macOS/Linux. So it WON'T see EWOULDBLOCK.
 	// This is expected per the spec: "IsAlive must be called from a
-	// different process than the supervisor."
+	// different process than the session."
 	// We test the cross-process probe in the integration test.
 
 	// Double acquire from same process should fail (same dir, new fd)

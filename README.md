@@ -1,19 +1,21 @@
-# supervisor
+# hootty
 
-A small Go library + reference CLI that supervises a single child process.
+A small Go library + reference CLI that manages a single child process.
 The child is spawned on a libghostty-backed PTY; its output is recorded as an
 asciicast v2 JSONL file for replay; and the current screen state is exposed through an
 embeddable `http.ServeMux` (plain text / HTML / raw VT).
 
-This is the slimmer cousin of `~/github.com/hayeah/dotfiles/libs/hayeah-go/supervisor`,
+Project home: <https://hootty.dev>.
+
+This is the slimmer cousin of `~/github.com/hayeah/dotfiles/libs/hayeah-go/session`,
 extracted so it can stand on its own. The major shift from the dotfiles
-version: tmux is no longer a spawn backend. The supervisor opens its own
+version: tmux is no longer a spawn backend. The session opens its own
 PTY and runs Ghostty's VT parser against the byte stream
 ([mitchellh/go-libghostty](https://github.com/mitchellh/go-libghostty)).
 
 ## Status
 
-In progress — see `docs/tasks/extract-supervisor-library-with-pty-libghostty-drop-tmux-spawn/spec.md`.
+In progress — see `docs/tasks/extract-hootty-library-with-pty-libghostty-drop-tmux-spawn/spec.md`.
 
 ## Build
 
@@ -24,7 +26,7 @@ once locally (clone, `make build`), then point this repo at it via
 `$LIBGHOSTTY` is `~/github.com/mitchellh/go-libghostty` by default.
 
 ```sh
-make build      # → bin/supervise
+make build      # → bin/hoot
 make test
 ```
 
@@ -37,22 +39,22 @@ Prereqs (one-time):
 ## Library shape
 
 ```go
-import "github.com/hayeah/supervisor"
+import session "github.com/hayeah/hootty"
 
-ptyImpl, _ := supervisor.NewLibghosttyPTY(master, cols, rows,
-    supervisor.WithRecorder(recorderFile))
+ptyImpl, _ := session.NewLibghosttyPTY(master, cols, rows,
+    session.WithRecorder(recorderFile))
 
-run := supervisor.New(supervisor.SupervisorConfig{
+run := session.New(session.SessionConfig{
     StateDir: ".state",
     Key:      "demo",
-    Service:  myService,   // implements supervisor.Service
+    Service:  myService,   // implements session.Service
     PTY:      ptyImpl,
 })
 err := run.Run(ctx)        // blocks; serves rpc.sock
 ```
 
 The `Runner.Mux()` http.ServeMux is the public surface. Mount it standalone
-(as `supervise` does over a unix socket) or embed it into a larger Go HTTP
+(as `hoot` does over a unix socket) or embed it into a larger Go HTTP
 server.
 
 ### HTTP endpoints contributed by `LibghosttyPTY`
@@ -74,37 +76,37 @@ Plus the always-present library routes:
 | `/state`          | JSON snapshot of `state.json`.                       |
 | `/events`         | SSE stream of state-change events.                   |
 
-## `supervise` CLI
+## `hoot` CLI
 
 ```sh
-supervise run     [--state-dir <dir>] [--key <key>] -- <cmd> [args...]
-supervise list    [--state-dir <dir>]
-supervise resolve [--state-dir <dir>] <id-or-prefix>
-supervise attach  [--host <addr>] [--state-dir <dir>] [--no-reconnect]
+hoot run     [--state-dir <dir>] [--key <key>] -- <cmd> [args...]
+hoot list    [--state-dir <dir>]
+hoot resolve [--state-dir <dir>] <id-or-prefix>
+hoot attach  [--host <addr>] [--state-dir <dir>] [--no-reconnect]
                   [--no-ascii-cinema-playback]
                   [--ascii-cinema-playback-window <duration>]
                   [--ascii-cinema-playback-speed <float>]
                   [--prefix-key <key>] <id-or-prefix>
-supervise serve   [--state-dir <dir>] --bind <host:port> [--prefix /api]
+hoot serve   [--state-dir <dir>] --bind <host:port> [--prefix /api]
 ```
 
-`--state-dir` defaults to `~/.supervise` for every subcommand.
+`--state-dir` defaults to `~/.hoot` for every subcommand.
 
-`supervise list` emits JSONL — one line per session, each line a
-serialized `supervisor.StateFile` (the same shape `<dir>/<key>/state.json`
+`hoot list` emits JSONL — one line per session, each line a
+serialized `session.StateFile` (the same shape `<dir>/<key>/state.json`
 holds on disk). Pipe through `jq -s` if you want an array.
 
-`run` opens a PTY pair, forks an internal supervisor process (with the
+`run` opens a PTY pair, forks an internal session process (with the
 master on fd 3 and stdio = slave), and serves the mux on
-`<dir>/<key>/rpc.sock`. The supervisor holds a flock on `<dir>/<key>/`
-for the lifetime of the supervised child.
+`<dir>/<key>/rpc.sock`. The session holds a flock on `<dir>/<key>/`
+for the lifetime of the managed child.
 
 Each session directory also contains `pty.cast`, an asciicast v2 JSONL
 recording with a header line followed by output (`"o"`) and resize
 (`"r"`) events. It is valid input for `asciinema play`, `agg`, and
 `asciinema-player`. Input (`"i"`) events are not recorded.
 
-If `--key` is omitted, `supervise` generates a random short id (3–8
+If `--key` is omitted, `hoot` generates a random short id (3–8
 chars drawn from `0-9a-z` minus `l` and `o`, collision-checked against
 existing sessions). The chosen key is printed on stdout.
 
@@ -113,14 +115,14 @@ either the full id or any unique prefix (minimum 3 characters,
 case-insensitive). Ambiguous prefixes fail with an error listing the
 matching ids; this is what makes the random ids ergonomic to use.
 
-### `supervise attach`
+### `hoot attach`
 
-`attach` connects the local terminal to a running supervisor as a
+`attach` connects the local terminal to a running session as a
 "dumb pipe with two side-channels": stdin → PTY master, master →
 stdout, plus a SIGWINCH → resize side-channel. The local termios is
 put into raw mode (no echo, no line buffering, no `Ctrl-C` →
 local SIGINT) so signal generation happens on the *remote* slave
-ldisc, not locally — the user's `Ctrl-C` reaches the supervised
+ldisc, not locally — the user's `Ctrl-C` reaches the managed
 child as expected.
 
 Multiple attaches can drive the same session simultaneously. The
@@ -173,7 +175,7 @@ fanout before bytes reach the user's real terminal.
 
 Live fanout strips terminal-query escape sequences before sending
 to the user's real terminal (the libghostty emulator on the
-supervisor already auto-replies, so a second answer from the user's
+session already auto-replies, so a second answer from the user's
 terminal would inject duplicate bytes into the child's stdin). The
 recorder + emulator branch sees raw bytes; only the user-facing
 fanout is filtered. See `vtquery_stripper.go`.
@@ -187,7 +189,7 @@ collide with tmux's `C-b`). Override via `--prefix-key C-a`,
 | --------------------- | ------------------------------------------------- |
 | `<prefix> .`          | detach (clean exit 0)                             |
 | `<prefix> ^`          | send literal prefix byte to remote                |
-| `<prefix> Ctrl-Z`     | suspend `supervise attach` (SIGTSTP; `fg` resumes) |
+| `<prefix> Ctrl-Z`     | suspend `hoot attach` (SIGTSTP; `fg` resumes) |
 | `<prefix> ?`          | print one-line help on stderr, stay attached      |
 
 Exit codes: `0` clean detach, `1` protocol/dial error, `2` argument
@@ -196,16 +198,16 @@ SIGINT/SIGTERM/SIGHUP we trapped.
 
 #### Remote attach (`--host`)
 
-`attach --host` connects to a `supervise serve` host instead of dialing
+`attach --host` connects to a `hoot serve` host instead of dialing
 a local `rpc.sock`. The server resolves the short id and bridges the
-HTTP/1.1 `Upgrade: supervise-attach/1` straight through to its session's
+HTTP/1.1 `Upgrade: hoot-attach/1` straight through to its session's
 `rpc.sock` — same `attachwire` protocol, just transported over TCP (or
 TLS).
 
 ```sh
-supervise attach --host m4mini:20000 abc          # bare host:port
-supervise attach --host http://m4mini:20000 abc   # explicit scheme
-supervise attach --host https://m4mini:443  abc   # TLS
+hoot attach --host m4mini:20000 abc          # bare host:port
+hoot attach --host http://m4mini:20000 abc   # explicit scheme
+hoot attach --host https://m4mini:443  abc   # TLS
 ```
 
 `--host` accepts:
@@ -216,7 +218,7 @@ supervise attach --host https://m4mini:443  abc   # TLS
 Auto-reconnect (default on `--host`, opt out with `--no-reconnect`):
 
 - Backoff: 1s, 2s, 4s, 8s, 16s, 30s — capped at 30s, retries forever.
-- A status line on stderr counts down each tier in place: `[supervise:
+- A status line on stderr counts down each tier in place: `[hoot:
   reconnecting in 5s — press any key to retry now]`. Pressing any
   non-prefix key wakes the backoff and retries immediately.
 - Termios stays raw across drops. On reconnect the client sends a fresh
@@ -226,7 +228,7 @@ Auto-reconnect (default on `--host`, opt out with `--no-reconnect`):
 - A 404 (no session matched) or 409 (ambiguous prefix) on the upgrade
   response surfaces as exit 2 with the server's message.
 
-### `supervise serve`
+### `hoot serve`
 
 `serve` is a fan-out HTTP server over the same `--state-dir`. It
 exposes a session-keyed REST + WebSocket surface that an external
@@ -234,7 +236,7 @@ UI can drive without dialing each session's `rpc.sock` directly
 (the browser cannot speak unix-socket).
 
 ```sh
-supervise serve --bind 127.0.0.1:8080 --state-dir ~/.supervise [--prefix /api]
+hoot serve --bind 127.0.0.1:8080 --state-dir ~/.hoot [--prefix /api]
 ```
 
 Routes (mounted at the bare path and — if `--prefix` is set — at
@@ -244,9 +246,9 @@ Routes (mounted at the bare path and — if `--prefix` is set — at
 | Method | Path                        | Behaviour                                                        |
 |--------|-----------------------------|------------------------------------------------------------------|
 | GET    | `/sessions`                 | `{sessions: [{...StateFile, alive}]}`                            |
-| POST   | `/sessions`                 | `{cmd \| argv, key?}` → forks `supervise __supervise`            |
+| POST   | `/sessions`                 | `{cmd \| argv, key?}` → forks `hoot __session`            |
 | GET    | `/sessions/{key}`           | state.json (alias of `/state`)                                  |
-| DELETE | `/sessions/{key}`           | SIGTERM the supervisor by pid (204)                              |
+| DELETE | `/sessions/{key}`           | SIGTERM the session by pid (204)                              |
 | GET    | `/sessions/{key}/state`     | state.json                                                       |
 | GET    | `/sessions/{key}/events`    | SSE proxy of upstream `/events`                                  |
 | GET    | `/sessions/{key}/attach`    | WebSocket bridge to upstream `/attach` (browser)                 |
@@ -257,30 +259,30 @@ The WebSocket bridge (`/attach`) speaks browser-friendly framing —
 binary frames carry PTY bytes both directions, and a text frame
 `{"type":"resize","cols":N,"rows":N}` is translated into an
 `attachwire.MsgSize` upstream — and terminates the
-`supervise-attach/1` HTTP-Upgrade protocol on the rpc.sock side.
+`hoot-attach/1` HTTP-Upgrade protocol on the rpc.sock side.
 
 The Upgrade pass-through (`/attach-raw`) is for the CLI: it resolves
 `{key}` (full id or unique prefix) server-side, hijacks the client
 connection, and `io.Copy`s bytes both ways with no transcoding. The
-client speaks the same `supervise-attach/1` framing it uses against a
+client speaks the same `hoot-attach/1` framing it uses against a
 local `rpc.sock`. 404 on no-match, 409 on ambiguous prefix.
 
 ### Example dashboard
 
-`packages/supervisor-webui/` is an example React app that renders
-the session list and a live terminal pane against `supervise
+`packages/hootty-webui/` is an example React app that renders
+the session list and a live terminal pane against `hoot
 serve`. To run it locally with vite + the API behind a single
 proxy port, point [`devportv3`](https://github.com/hayeah/devportv3)
 at the included `devport.toml`:
 
 ```sh
-make build           # → bin/supervise
+make build           # → bin/hoot
 pnpm install
 devport up           # foreground; or `--daemon` for background
 # proxy URL is printed in the up summary
 ```
 
-The `@hayeah/supervisor-termui` package extracts the terminal
+The `@hayeah/hootty-termui` package extracts the terminal
 widget (ghostty-web canvas + AttachStream byte-pipe contract) so
 it can be reused in other dashboards.
 
@@ -290,5 +292,3 @@ it can be reused in other dashboards.
   and composites the child's virtual screen into a sub-region of
   the local terminal (so per-attach winsize can diverge from the
   negotiated min).
-- Reconnect / resume.
-- Remote HTTP access.

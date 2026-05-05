@@ -1,4 +1,4 @@
-package supervisor
+package session
 
 import (
 	"encoding/json"
@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hayeah/supervisor/internal/shortid"
+	"github.com/hayeah/hootty/internal/shortid"
 )
 
 func TestWriterAndStore(t *testing.T) {
@@ -15,7 +15,7 @@ func TestWriterAndStore(t *testing.T) {
 	stateDir := dir + "/vite"
 
 	initial := StateFile{
-		Supervisor: SupervisorState{
+		Session: SessionState{
 			Key:       "vite",
 			CreatedAt: time.Now(),
 		},
@@ -34,8 +34,8 @@ func TestWriterAndStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if state.Supervisor.Key != "vite" {
-		t.Errorf("got key=%s, want vite", state.Supervisor.Key)
+	if state.Session.Key != "vite" {
+		t.Errorf("got key=%s, want vite", state.Session.Key)
 	}
 
 	// Update state section
@@ -66,8 +66,8 @@ func TestWriterAndStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if resolved.Supervisor.Key != "vite" {
-		t.Errorf("got key=%s, want vite", resolved.Supervisor.Key)
+	if resolved.Session.Key != "vite" {
+		t.Errorf("got key=%s, want vite", resolved.Session.Key)
 	}
 
 	// Resolve by exact match
@@ -75,8 +75,8 @@ func TestWriterAndStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve exact: %v", err)
 	}
-	if resolved.Supervisor.Key != "vite" {
-		t.Errorf("exact: got key=%s, want vite", resolved.Supervisor.Key)
+	if resolved.Session.Key != "vite" {
+		t.Errorf("exact: got key=%s, want vite", resolved.Session.Key)
 	}
 }
 
@@ -86,7 +86,7 @@ func TestStoreResolveErrors(t *testing.T) {
 	// Two sessions with overlapping prefix.
 	for _, k := range []string{"abc123", "abc456"} {
 		w, err := OpenWriter(filepath.Join(dir, k), StateFile{
-			Supervisor: SupervisorState{Key: k, CreatedAt: time.Now()},
+			Session: SessionState{Key: k, CreatedAt: time.Now()},
 		})
 		if err != nil {
 			t.Fatalf("OpenWriter %s: %v", k, err)
@@ -131,7 +131,7 @@ func TestWriterSnapshot(t *testing.T) {
 	stateDir := dir + "/test"
 
 	initial := StateFile{
-		Supervisor: SupervisorState{Key: "test"},
+		Session: SessionState{Key: "test"},
 	}
 
 	w, err := OpenWriter(stateDir, initial)
@@ -141,7 +141,7 @@ func TestWriterSnapshot(t *testing.T) {
 	defer w.Close()
 
 	snap := w.Snapshot()
-	if snap.Supervisor.Key != "test" {
-		t.Errorf("got key=%s, want test", snap.Supervisor.Key)
+	if snap.Session.Key != "test" {
+		t.Errorf("got key=%s, want test", snap.Session.Key)
 	}
 }

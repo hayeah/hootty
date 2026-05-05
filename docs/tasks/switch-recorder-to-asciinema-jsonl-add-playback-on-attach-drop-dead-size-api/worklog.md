@@ -14,7 +14,7 @@ created: 2026-05-05T04:36:06Z
 >   type: open
 > ---
 >
-> Work in `~/github.com/hayeah/supervisor`.
+> Work in `~/github.com/hayeah/hootty`.
 >
 > Two changes, one section:
 >
@@ -42,7 +42,7 @@ created: 2026-05-05T04:36:06Z
 >
 > **Playback feature on attach** (default ON): after sending the libghostty snapshot, the server *also* streams the asciicast back to the client at original timing (or at a sped-up rate — pick a reasonable default and justify in spec.md), so the user can watch recent history play out before live takes over. The libghostty snapshot is the "where we are now" frame; the asciinema playback gives the "how we got here" replay.
 >
-> - `--no-ascii-cinema-playback` flag on `supervise attach` disables the playback (snapshot only, then live).
+> - `--no-ascii-cinema-playback` flag on `hoot attach` disables the playback (snapshot only, then live).
 > - Server side: a new attachwire frame, or extend `Hello` with a `playback_mode` field — pick what's minimal.
 > - Decide: is playback bounded (e.g. last N minutes of history) or full session? Long-lived sessions could have huge `pty.cast` files; replaying a 12-hour session at original speed is unusable. Spec your default and the override.
 > - Ensure the live cutover is still byte-clean — playback ends, live begins, no missed bytes (same atomicity property as the original full-replay design).
@@ -67,7 +67,7 @@ created: 2026-05-05T04:36:06Z
 
 - [x] Remove `Recorder.Size` and the `SubscribeAtRecord` offset return
 - [x] Implement asciicast v2 recorder output and resize events
-- [x] Switch supervisor sessions from `pty.log` to `pty.cast`
+- [x] Switch session sessions from `pty.log` to `pty.cast`
 - [x] Add cast playback reader and attach-handler playback streaming
 - [x] Add attach CLI flags and `Hello` playback fields
 - [x] Update README and focused tests
@@ -80,13 +80,13 @@ created: 2026-05-05T04:36:06Z
 - [x] Re-run tests and refresh evidence after rebase
 
 ## Agent log
-- 2026-05-05T04:42:13Z — Checked out `github.com/hayeah/supervisor` into worktree slot `000`, inspected recorder/attach/CLI surfaces, and wrote `spec.md` with concrete playback defaults and wire-shape decisions.
-- 2026-05-05T04:43Z Dropped recorder offset API in supervisor commit 45a70a2; go test ./... passes.
-- 2026-05-05T04:46Z Recorded PTY output as asciicast in supervisor commit 40c3f1d; go test ./... passes.
-- 2026-05-05T04:49Z Added attach asciicast playback and flags in supervisor commit e31fe34; go test ./... passes.
-- 2026-05-05T04:50Z Updated README and CLI docs for pty.cast/playback in supervisor commit 47ea618; go test ./... passes.
+- 2026-05-05T04:42:13Z — Checked out `github.com/hayeah/hootty` into worktree slot `000`, inspected recorder/attach/CLI surfaces, and wrote `spec.md` with concrete playback defaults and wire-shape decisions.
+- 2026-05-05T04:43Z Dropped recorder offset API in session commit 45a70a2; go test ./... passes.
+- 2026-05-05T04:46Z Recorded PTY output as asciicast in session commit 40c3f1d; go test ./... passes.
+- 2026-05-05T04:49Z Added attach asciicast playback and flags in session commit e31fe34; go test ./... passes.
+- 2026-05-05T04:50Z Updated README and CLI docs for pty.cast/playback in session commit 47ea618; go test ./... passes.
 - 2026-05-05T04:50Z Full automated verification passed: go test ./...
-- 2026-05-05T04:54Z E2E tmux playback exposed CSI ? 996 n; fixed stripper in supervisor commit 7656d34 and recorded the design note.
+- 2026-05-05T04:54Z E2E tmux playback exposed CSI ? 996 n; fixed stripper in session commit 7656d34 and recorded the design note.
 - 2026-05-05T04:56Z Done: implementation committed through 7656d34; worklog evidence covers go test, asciinema play, playback/no-playback attach, and tmux query-strip playback.
 - 2026-05-05T05:12Z Rebased on master phased snapshot protocol preserving master features. Playback now runs after `MsgSnapshotScreen` and before live `MsgOutput`; added raw attach golden coverage in `c7db7d9`; refreshed tests and e2e evidence.
 - 2026-05-05T05:15Z Done after rebase: preserved master phased snapshot/golden harness, added playback raw golden c7db7d9, refreshed tests/e2e, and set status back to done.
@@ -95,18 +95,18 @@ created: 2026-05-05T04:36:06Z
 - 2026-05-05T05:05Z rebase conflict on master during lgtm. aborted — worktree is clean.
   
   textual conflict in: pty_libghostty_test.go (UU)
-  auto-merged (no conflict): cmd/supervise/main.go, cmd/supervise/supervise.go, pty_libghostty.go, recorder.go, recorder_test.go (A)
+  auto-merged (no conflict): cmd/hoot/main.go, cmd/hoot/session.go, pty_libghostty.go, recorder.go, recorder_test.go (A)
   
   commits that landed on master since you branched:
   
-  - 338c132 "Split attach snapshots into paint phases" — attach_handler.go, cmd/supervise/attach.go, internal/attachwire/wire.go, pty_libghostty.go, pty_libghostty_test.go
-  - 32c1daf "Add attach golden snapshot harness" — README.md, cmd/supervise/attach.go, cmd/supervise/attach_golden_test.go (NEW), internal/attachetest/harness.go (NEW), internal/attachetest/testdata/*.golden (NEW)
+  - 338c132 "Split attach snapshots into paint phases" — attach_handler.go, cmd/hoot/attach.go, internal/attachwire/wire.go, pty_libghostty.go, pty_libghostty_test.go
+  - 32c1daf "Add attach golden snapshot harness" — README.md, cmd/hoot/attach.go, cmd/hoot/attach_golden_test.go (NEW), internal/attachetest/harness.go (NEW), internal/attachetest/testdata/*.golden (NEW)
   
   what landed structurally (this is the context you need most — your design now needs to fit on top of it):
   
   - `Snapshot()` was split into `SnapshotParts() (scrollback, screen []byte, err error)`. The wire protocol got two new frame types `MsgSnapshotScrollback` + `MsgSnapshotScreen` to replace the old single snapshot frame.
   - The client paint is now PHASED: connect banner → scrollback bytes → ESC[H ESC[2J (clear viewport) → visible-screen bytes + cursor restore → live frames. Detach is the inverse.
-  - A reusable golden-snapshot harness lives in `internal/attachetest/`. Tests in `cmd/supervise/attach_golden_test.go` drive remote+local libghostty terminals through the attach pipeline and compare against checked-in goldens. Six scenarios covered.
+  - A reusable golden-snapshot harness lives in `internal/attachetest/`. Tests in `cmd/hoot/attach_golden_test.go` drive remote+local libghostty terminals through the attach pipeline and compare against checked-in goldens. Six scenarios covered.
   
   your asciinema playback feature needs to slot INTO this phased paint, not replace it. the natural insertion point is between the visible-screen phase and the live cutover: scrollback → clear → visible-screen + cursor restore → **asciicast playback** → live frames. that way the user sees "where we are now" first, then "how we got here" replays before live takes over. you may want to reconsider whether playback should run before or after visible-screen given the new phasing — flag it in the agent log if you change the design.
   
@@ -122,7 +122,7 @@ created: 2026-05-05T04:36:06Z
 
 ## Evidence
 
-Commits in `repos/github.com/hayeah/supervisor`:
+Commits in `repos/github.com/hayeah/hootty`:
 
 - `0bba2bd` Drop recorder offset API
 - `b279e12` Record PTY output as asciicast
@@ -135,11 +135,11 @@ Automated tests:
 
 ```sh
 $ go test ./...
-ok  	github.com/hayeah/supervisor	(cached)
-ok  	github.com/hayeah/supervisor/cmd/supervise	0.466s
-?   	github.com/hayeah/supervisor/internal/attachetest	[no test files]
-?   	github.com/hayeah/supervisor/internal/attachwire	[no test files]
-ok  	github.com/hayeah/supervisor/internal/shortid	(cached)
+ok  	github.com/hayeah/hootty	(cached)
+ok  	github.com/hayeah/hootty/cmd/hoot	0.466s
+?   	github.com/hayeah/hootty/internal/attachetest	[no test files]
+?   	github.com/hayeah/hootty/internal/attachwire	[no test files]
+ok  	github.com/hayeah/hootty/internal/shortid	(cached)
 ```
 
 Golden attach playback harness:

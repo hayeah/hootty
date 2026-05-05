@@ -2,7 +2,7 @@
 
 ## Goal
 
-Make `supervise attach` paint local terminals in clear phases so stale local viewport content cannot bleed through remote snapshots. The server will split libghostty snapshots into scrollback and visible-screen protocol frames; the client will bracket attach/detach with plain banners and local-only cleanup. This section also ships a reusable libghostty-backed golden snapshot harness for the attach UX. Alt-screen behavior is not expanded here beyond preserving the existing full-snapshot fallback.
+Make `hoot attach` paint local terminals in clear phases so stale local viewport content cannot bleed through remote snapshots. The server will split libghostty snapshots into scrollback and visible-screen protocol frames; the client will bracket attach/detach with plain banners and local-only cleanup. This section also ships a reusable libghostty-backed golden snapshot harness for the attach UX. Alt-screen behavior is not expanded here beyond preserving the existing full-snapshot fallback.
 
 ## Architecture
 
@@ -18,7 +18,7 @@ Make `supervise attach` paint local terminals in clear phases so stale local vie
   - After initial `Size`, call `SubscribeWithSnapshotParts()`.
   - Always send `MsgSnapshotScrollback`, then `MsgSnapshotScreen`, even when a part is empty. Empty scrollback still tells the client the attach paint sequence has begun.
   - Continue live PTY bytes as `MsgOutput`.
-- `cmd/supervise/attach.go`
+- `cmd/hoot/attach.go`
   - Thread an attach label through the loop: local uses resolved session key and `local`; remote uses the user-provided session argument and host flag.
   - On snapshot scrollback: emit `[connected. <session> @ <host>]`, then the scrollback bytes.
   - On snapshot screen: emit `ESC[H ESC[2J`, then visible-screen bytes.

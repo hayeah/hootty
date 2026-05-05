@@ -14,29 +14,29 @@ created: 2026-05-02T08:18:15Z
 >   type: open
 > ---
 >
-> In `~/github.com/hayeah/supervisor`, drop the `autoKey` scheme. Sessions should get random hash ids instead — short, opaque, no semantic structure. Then add shortid resolution so callers (and the `supervise` CLI) can refer to a session by any unique prefix of its full id.
+> In `~/github.com/hayeah/hootty`, drop the `autoKey` scheme. Sessions should get random hash ids instead — short, opaque, no semantic structure. Then add shortid resolution so callers (and the `hoot` CLI) can refer to a session by any unique prefix of its full id.
 >
-> Vendor the shortid logic from `/Users/me/github.com/hayeah/dotfiles/libs/hayeah-go/shortid/shortid.go` directly into the supervisor repo (e.g. under `internal/shortid/` or a similar package). Copy the file verbatim, adjust the package path, keep tests if they exist alongside it. No external dependency on the dotfiles repo.
+> Vendor the shortid logic from `/Users/me/github.com/hayeah/dotfiles/libs/hayeah-go/shortid/shortid.go` directly into the session repo (e.g. under `internal/shortid/` or a similar package). Copy the file verbatim, adjust the package path, keep tests if they exist alongside it. No external dependency on the dotfiles repo.
 >
 > Wire it up:
 > - new sessions: generate the full hash id, store it
 > - lookup paths (CLI commands, HTTP routes, anywhere a key is accepted): accept either the full id or a unique prefix; ambiguous prefixes return an error listing the matches
-> - update tests, README, and the `supervise` CLI accordingly
+> - update tests, README, and the `hoot` CLI accordingly
 >
-> - [ ] vendor shortid, replace autoKey with random hash ids, add prefix resolution everywhere a session key is accepted, update tests + README + supervise CLI
+> - [ ] vendor shortid, replace autoKey with random hash ids, add prefix resolution everywhere a session key is accepted, update tests + README + hoot CLI
 
 ## Todos
 - [x] vendor shortid package + tests + testdata into `internal/shortid/`
-- [x] drop autoKey; generate random hash id in `cmd/supervise/run.go`
+- [x] drop autoKey; generate random hash id in `cmd/hoot/run.go`
 - [x] swap `Store.Resolve` to use shortid (returns clearer errors)
-- [x] add `cmd/supervise list` and `resolve <prefix>` CLI for prefix lookup
+- [x] add `cmd/hoot list` and `resolve <prefix>` CLI for prefix lookup
 - [x] update `store_test.go` for new Resolve semantics; add new tests
-- [x] update README + `supervise` usage text
+- [x] update README + `hoot` usage text
 
 ## Agent log
 - 2026-05-02T15:20Z — vendored shortid (commit 25f93ff)
 - 2026-05-02T15:22Z — dropped autoKey, swapped Store.Resolve to shortid (commit c5b900d)
-- 2026-05-02T15:24Z — added `supervise list` / `resolve` + README (commit 1f97d75)
+- 2026-05-02T15:24Z — added `hoot list` / `resolve` + README (commit 1f97d75)
 
 ## Boss log
 
@@ -45,42 +45,42 @@ created: 2026-05-02T08:18:15Z
 ### `go test ./...`
 
 ```
-ok  	github.com/hayeah/supervisor	0.636s
-?   	github.com/hayeah/supervisor/cmd/supervise	[no test files]
-ok  	github.com/hayeah/supervisor/internal/shortid	0.314s
+ok  	github.com/hayeah/hootty	0.636s
+?   	github.com/hayeah/hootty/cmd/hoot	[no test files]
+ok  	github.com/hayeah/hootty/internal/shortid	0.314s
 ```
 
 `internal/shortid` runs the full test suite vendored verbatim from
 dotfiles (Generate alphabet/uniqueness, Resolve happy paths, all three
-error types). `supervisor` package adds `TestStoreResolveErrors` which
+error types). `session` package adds `TestStoreResolveErrors` which
 exercises `IDTooShortError`, `AmbiguousIDError`, `IDNotFoundError`
 through `Store.Resolve`.
 
 ### CLI smoke test
 
-Built `bin/supervise`, ran two unkeyed `supervise run` invocations
+Built `bin/hoot`, ran two unkeyed `hoot run` invocations
 against a temp state-dir, exercised every lookup path:
 
 ```
-$ supervise run     --state-dir $SD -- sh -c 'sleep 60'
-supervise: session "ab7" started ...
+$ hoot run     --state-dir $SD -- sh -c 'sleep 60'
+hoot: session "ab7" started ...
 ab7
-$ supervise run     --state-dir $SD -- sh -c 'sleep 60'
-supervise: session "c7b" started ...
+$ hoot run     --state-dir $SD -- sh -c 'sleep 60'
+hoot: session "c7b" started ...
 c7b
-$ supervise list    --state-dir $SD
+$ hoot list    --state-dir $SD
 ab7	alive	2026-05-02T15:23:18+07:00
 c7b	alive	2026-05-02T15:23:18+07:00
-$ supervise resolve --state-dir $SD 5cf            # full id
+$ hoot resolve --state-dir $SD 5cf            # full id
 5cf
-$ supervise resolve --state-dir $SD 5cf            # 3-char prefix (also full)
+$ hoot resolve --state-dir $SD 5cf            # 3-char prefix (also full)
 5cf
-$ supervise resolve --state-dir $SD a              # 1 char
-supervise resolve: query "a" too short (minimum 3 characters)
-$ supervise resolve --state-dir $SD zzz            # no match
-supervise resolve: no match for "zzz"
-$ supervise resolve --state-dir $SD abc            # 2 hand-seeded abc* sessions
-supervise resolve: ambiguous prefix "abc": matches [abcbar abcfoo]
+$ hoot resolve --state-dir $SD a              # 1 char
+hoot resolve: query "a" too short (minimum 3 characters)
+$ hoot resolve --state-dir $SD zzz            # no match
+hoot resolve: no match for "zzz"
+$ hoot resolve --state-dir $SD abc            # 2 hand-seeded abc* sessions
+hoot resolve: ambiguous prefix "abc": matches [abcbar abcfoo]
 ```
 
 Ids generated by the run command come from the shortid alphabet

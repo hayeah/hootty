@@ -1,4 +1,4 @@
-package supervisor
+package session
 
 import (
 	"path/filepath"
@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hayeah/supervisor/internal/attachwire"
+	"github.com/hayeah/hootty/internal/attachwire"
 )
 
 func TestStreamAsciiCinemaPlaybackStripsQueries(t *testing.T) {

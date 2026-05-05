@@ -19,12 +19,12 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/hayeah/supervisor"
+	"github.com/hayeah/hootty"
 	libghostty "github.com/mitchellh/go-libghostty"
 )
 
 type Remote struct {
-	PTY    *supervisor.LibghosttyPTY
+	PTY    *session.LibghosttyPTY
 	slave  *os.File
 	master *os.File
 	server *httptest.Server
@@ -34,14 +34,14 @@ func NewRemote(t testing.TB, cols, rows uint16) *Remote {
 	return NewRemoteWithOptions(t, cols, rows)
 }
 
-func NewRemoteWithOptions(t testing.TB, cols, rows uint16, opts ...supervisor.LibghosttyOption) *Remote {
+func NewRemoteWithOptions(t testing.TB, cols, rows uint16, opts ...session.LibghosttyOption) *Remote {
 	t.Helper()
 	master, slave, err := pty.Open()
 	if err != nil {
 		t.Fatalf("pty.Open: %v", err)
 	}
-	allOpts := append([]supervisor.LibghosttyOption{supervisor.WithLibghosttyScrollback(200)}, opts...)
-	ptyImpl, err := supervisor.NewLibghosttyPTY(master, cols, rows, allOpts...)
+	allOpts := append([]session.LibghosttyOption{session.WithLibghosttyScrollback(200)}, opts...)
+	ptyImpl, err := session.NewLibghosttyPTY(master, cols, rows, allOpts...)
 	if err != nil {
 		_ = slave.Close()
 		_ = master.Close()
@@ -292,7 +292,7 @@ func WriteUpgrade(t testing.TB, conn net.Conn, url string) {
 	t.Helper()
 	bufrw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	req.Header.Set("Upgrade", "supervise-attach/1")
+	req.Header.Set("Upgrade", "hoot-attach/1")
 	req.Header.Set("Connection", "Upgrade")
 	if err := req.Write(bufrw); err != nil {
 		t.Fatalf("write upgrade: %v", err)
