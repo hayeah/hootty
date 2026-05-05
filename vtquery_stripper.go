@@ -28,6 +28,7 @@ package supervisor
 //   - CSI > q — XTVERSION
 //   - CSI 5 n / CSI ? 5 n — DSR status
 //   - CSI 6 n / CSI ? 6 n — CPR / DECXCPR cursor position report
+//   - CSI ? Pn n — private DSR variants used by tmux
 //   - CSI ? Pn $ p — DECRQM mode query
 //   - CSI 14 t / CSI 16 t / CSI 18 t / CSI 19 t — window/cell/screen size queries
 //   - CSI ? u — kitty keyboard query
@@ -295,13 +296,22 @@ func paramsAreDA(params []byte) bool {
 	return false
 }
 
-// paramsAreDSR matches DSR / CPR / DECXCPR shapes: "5" "6" "?5" "?6".
+// paramsAreDSR matches DSR / CPR / DECXCPR shapes: "5" "6" "?5" "?6",
+// plus private numeric DSR variants like "?996" emitted by tmux.
 func paramsAreDSR(params []byte) bool {
 	switch string(params) {
 	case "5", "6", "?5", "?6":
 		return true
 	}
-	return false
+	if len(params) < 2 || params[0] != '?' {
+		return false
+	}
+	for _, b := range params[1:] {
+		if b < '0' || b > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // paramsAreSizeQuery matches CSI 14 t / 16 t / 18 t / 19 t.

@@ -20,6 +20,7 @@ func TestVTQueryStripper_DropsKnownQueries(t *testing.T) {
 		{"DSR_status", "\x1b[5n"},
 		{"CPR", "\x1b[6n"},
 		{"DECXCPR", "\x1b[?6n"},
+		{"tmux_private_DSR", "\x1b[?996n"},
 		{"DECRQM", "\x1b[?2026$p"},
 		{"DECRQM_multi_digit", "\x1b[?12345$p"},
 		{"size_pixels", "\x1b[14t"},
@@ -46,19 +47,19 @@ func TestVTQueryStripper_DropsKnownQueries(t *testing.T) {
 func TestVTQueryStripper_PreservesNonQueries(t *testing.T) {
 	cases := []string{
 		"hello world\r\n",
-		"\x1b[0m",         // SGR reset
+		"\x1b[0m", // SGR reset
 		"\x1b[31mred\x1b[0m",
-		"\x1b[H",          // CUP home
-		"\x1b[2J",         // ED clear
-		"\x1b[?1049h",     // alt screen enter (set, not query)
-		"\x1b[?25l",       // hide cursor (set)
-		"\x1b]0;title\x07", // OSC 0 set window title
+		"\x1b[H",                         // CUP home
+		"\x1b[2J",                        // ED clear
+		"\x1b[?1049h",                    // alt screen enter (set, not query)
+		"\x1b[?25l",                      // hide cursor (set)
+		"\x1b]0;title\x07",               // OSC 0 set window title
 		"\x1b]11;rgb:2828/2c2c/3434\x07", // OSC 11 set bg
 		"\x1b]4;5;rgb:ff/00/00\x07",      // OSC 4 set palette
-		"\x1bc",           // RIS reset
-		"\x1b[u",          // restore cursor (NOT kitty query — no '?')
-		"\x1b[2 q",        // cursor style (NOT XTVERSION)
-		"\x1b[8;24;80t",   // window resize op (NOT a query)
+		"\x1bc",                          // RIS reset
+		"\x1b[u",                         // restore cursor (NOT kitty query — no '?')
+		"\x1b[2 q",                       // cursor style (NOT XTVERSION)
+		"\x1b[8;24;80t",                  // window resize op (NOT a query)
 	}
 	for _, tc := range cases {
 		t.Run(tc, func(t *testing.T) {
