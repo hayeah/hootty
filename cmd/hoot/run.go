@@ -33,12 +33,28 @@ func cmdRun(args []string) error {
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
 	key := fs.String("key", "", "session key (default: random short id)")
 	remoteFlag := fs.String("remote", "", "remote hoot serve URL (http://host:port, host:port, or ssh://host)")
+	attach := fs.Bool("attach", false, "attach to the new session after it starts")
+	noReconnect := fs.Bool("no-reconnect", false, "exit on first drop instead of auto-reconnecting during post-spawn attach (--remote only)")
+	noAsciiCinemaPlayback := fs.Bool("no-ascii-cinema-playback", false, "skip asciicast history playback during post-spawn attach")
+	asciiCinemaPlaybackWindow := fs.Duration("ascii-cinema-playback-window", 5*time.Minute, "asciicast history window to replay during post-spawn attach (0 = full cast)")
+	asciiCinemaPlaybackSpeed := fs.Float64("ascii-cinema-playback-speed", 8, "asciicast playback speed multiplier during post-spawn attach")
+	prefixSpec := fs.String("prefix-key", "C-^", "command prefix byte for post-spawn attach (e.g. C-^, ^a, 0x1c)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
 		return errors.New("run: missing command after --")
+	}
+	attachOpts, err := attachOptionsFromFlags(
+		*prefixSpec,
+		*noReconnect,
+		*noAsciiCinemaPlayback,
+		*asciiCinemaPlaybackWindow,
+		*asciiCinemaPlaybackSpeed,
+	)
+	if err != nil {
+		return fmt.Errorf("run: %w", err)
 	}
 
 	remote, err := parseRemoteFlag(*remoteFlag, *stateDir)
@@ -70,8 +86,22 @@ func cmdRun(args []string) error {
 		if body.StateFile == nil || body.Session.Key == "" {
 			return errors.New("remote run: response missing session key")
 		}
+		sessionKey := body.Session.Key
 		fmt.Fprintf(os.Stderr, "hoot: session %q started (remote=%s)\n", body.Session.Key, remote.display)
-		fmt.Println(body.Session.Key)
+		if !*attach {
+			fmt.Println(sessionKey)
+			return nil
+		}
+		exitCode, err := runAttachLoop(
+			dialAttachRaw(remote, sessionKey),
+			attachOpts.PrefixByte,
+			!attachOpts.NoReconnect,
+			attachLabel{Session: sessionKey, Host: remote.display},
+			attachOpts.Playback,
+		)
+		if exitCode != 0 || err != nil {
+			return &exitError{code: exitCode, err: err}
+		}
 		return nil
 	}
 
@@ -150,8 +180,21 @@ func cmdRun(args []string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "hoot: session %q started (state-dir=%s)\n", *key, *stateDir)
-	fmt.Println(*key)
 	_ = cmd.Process.Release()
+	if !*attach {
+		fmt.Println(*key)
+		return nil
+	}
+	exitCode, err := runAttachLoop(
+		localDialer(sockPath),
+		attachOpts.PrefixByte,
+		false,
+		attachLabel{Session: *key, Host: "local"},
+		attachOpts.Playback,
+	)
+	if exitCode != 0 || err != nil {
+		return &exitError{code: exitCode, err: err}
+	}
 	return nil
 }
 

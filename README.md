@@ -82,7 +82,11 @@ Plus the always-present library routes:
 ## `hoot` CLI
 
 ```sh
-hoot run     [--remote <url>] [--state-dir <dir>] [--key <key>] -- <cmd> [args...]
+hoot run     [--remote <url>] [--state-dir <dir>] [--key <key>] [--attach]
+                  [--no-reconnect] [--no-ascii-cinema-playback]
+                  [--ascii-cinema-playback-window <duration>]
+                  [--ascii-cinema-playback-speed <float>]
+                  [--prefix-key <key>] -- <cmd> [args...]
 hoot list    [--remote <url>] [--state-dir <dir>]
 hoot resolve [--remote <url>] [--state-dir <dir>] <id-or-prefix>
 hoot attach  [--remote <url>] [--state-dir <dir>] [--no-reconnect]
@@ -124,6 +128,15 @@ recording with a header line followed by output (`"o"`) and resize
 If `--key` is omitted, `hoot` generates a random short id (3–8
 chars drawn from `0-9a-z` minus `l` and `o`, collision-checked against
 existing sessions). The chosen key is printed on stdout.
+
+Pass `--attach` to `run` to attach the current terminal to the new
+session immediately after spawn readiness. Detaching with
+`<prefix>.` leaves the session running in the background, the same as
+running `hoot run -- ...` followed by `hoot attach <key>`. With
+`--remote`, the session is spawned through the remote `hoot serve`
+transport and the attach phase uses that same transport. The attach
+phase accepts the same playback, prefix-key, and reconnect flags as
+`hoot attach`; `--no-reconnect` only affects remote attach.
 
 Anywhere a session key is accepted (including `resolve`), you can pass
 either the full id or any unique prefix (minimum 3 characters,
