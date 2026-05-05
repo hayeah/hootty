@@ -48,11 +48,12 @@ func TestTunnelArgsShape(t *testing.T) {
 		"ServerAliveCountMax=2",
 		"ExitOnForwardFailure=yes",
 		"-p\n2222",
-		"-L\n" + plan.LocalSocket + ":" + plan.RemoteSocket,
+		"-L\n" + plan.LocalSocket + ":" + plan.ForwardTarget,
 		"me@devbox",
 		"sh -lc",
 		"hoot serve --bind",
-		"unix:/home/me/.hoot/.tunnels/012345.sock",
+		plan.RemoteBind,
+		"/home/me/.hoot/.tunnels/012345.pid",
 		"trap",
 	}
 	for _, want := range checks {
@@ -62,6 +63,9 @@ func TestTunnelArgsShape(t *testing.T) {
 	}
 	if plan.RemoteSocket != "/home/me/.hoot/.tunnels/012345.sock" {
 		t.Fatalf("RemoteSocket = %q", plan.RemoteSocket)
+	}
+	if plan.RemotePID != "/home/me/.hoot/.tunnels/012345.pid" {
+		t.Fatalf("RemotePID = %q", plan.RemotePID)
 	}
 }
 

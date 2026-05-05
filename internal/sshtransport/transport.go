@@ -27,10 +27,13 @@ type Config struct {
 }
 
 type Plan struct {
-	Target       string
-	ControlPath  string
-	LocalSocket  string
-	RemoteSocket string
+	Target        string
+	ControlPath   string
+	LocalSocket   string
+	RemoteSocket  string
+	RemoteBind    string
+	ForwardTarget string
+	RemotePID     string
 }
 
 type Tunnel struct {
@@ -38,6 +41,7 @@ type Tunnel struct {
 	done        chan error
 	localSocket string
 	stderr      *bytes.Buffer
+	cleanupArgs []string
 
 	closeOnce sync.Once
 	closeErr  error
@@ -80,6 +84,7 @@ func Open(ctx context.Context, cfg Config) (*Tunnel, error) {
 		done:        make(chan error, 1),
 		localSocket: plan.LocalSocket,
 		stderr:      &stderr,
+		cleanupArgs: CleanupArgs(cfg, plan),
 	}
 	go func() {
 		t.done <- cmd.Wait()
@@ -110,6 +115,11 @@ func (t *Tunnel) Close() error {
 			_ = t.cmd.Process.Kill()
 			<-t.done
 		}
+		if len(t.cleanupArgs) > 0 {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = exec.CommandContext(ctx, "ssh", t.cleanupArgs...).Run()
+			cancel()
+		}
 		_ = os.Remove(t.localSocket)
 	})
 	return t.closeErr
@@ -124,29 +134,46 @@ func BuildPlan(cfg Config, id, remoteHome string) Plan {
 	if cfg.Port != "" {
 		safeHost += "_" + cfg.Port
 	}
+	port := remotePort(id)
 	return Plan{
-		Target:       target,
-		ControlPath:  ControlPath(cfg.StateDir, cfg.User, cfg.Host, cfg.Port),
-		LocalSocket:  filepath.Join(cfg.StateDir, "fwd-"+safeHost+"-"+fmt.Sprint(os.Getpid())+"-"+id+".sock"),
-		RemoteSocket: path.Join(remoteHome, ".hoot", ".tunnels", id+".sock"),
+		Target:        target,
+		ControlPath:   ControlPath(cfg.StateDir, cfg.User, cfg.Host, cfg.Port),
+		LocalSocket:   filepath.Join(cfg.StateDir, "fwd-"+safeHost+"-"+fmt.Sprint(os.Getpid())+"-"+id+".sock"),
+		RemoteSocket:  path.Join(remoteHome, ".hoot", ".tunnels", id+".sock"),
+		RemoteBind:    fmt.Sprintf("127.0.0.1:%d", port),
+		ForwardTarget: fmt.Sprintf("127.0.0.1:%d", port),
+		RemotePID:     path.Join(remoteHome, ".hoot", ".tunnels", id+".pid"),
 	}
 }
 
 func TunnelArgs(cfg Config, plan Plan) []string {
 	args := baseArgs(cfg, plan.ControlPath)
-	remoteCommand := "sh -lc " + shellQuote(remoteServeScript(plan.RemoteSocket))
+	remoteCommand := "sh -lc " + shellQuote(remoteServeScript(plan.RemoteBind, plan.RemotePID))
 	args = append(args,
 		"-o", "ExitOnForwardFailure=yes",
-		"-L", plan.LocalSocket+":"+plan.RemoteSocket,
+		"-L", plan.LocalSocket+":"+plan.ForwardTarget,
 		plan.Target,
 		remoteCommand,
 	)
 	return args
 }
 
-func remoteServeScript(remoteSocket string) string {
-	return "hoot serve --bind " + shellQuote("unix:"+remoteSocket) +
-		" & pid=$!; trap 'kill \"$pid\" 2>/dev/null; wait \"$pid\" 2>/dev/null; exit' HUP INT TERM EXIT; wait \"$pid\""
+func CleanupArgs(cfg Config, plan Plan) []string {
+	args := baseArgs(cfg, plan.ControlPath)
+	script := "if test -f " + shellQuote(plan.RemotePID) +
+		"; then pid=$(cat " + shellQuote(plan.RemotePID) +
+		"); kill \"$pid\" 2>/dev/null; wait \"$pid\" 2>/dev/null; rm -f " + shellQuote(plan.RemotePID) +
+		"; fi"
+	return append(args, plan.Target, "sh -lc "+shellQuote(script))
+}
+
+func remoteServeScript(remoteBind, remotePID string) string {
+	pidDir := path.Dir(remotePID)
+	return "mkdir -p " + shellQuote(pidDir) +
+		"; hoot serve --bind " + shellQuote(remoteBind) +
+		" & pid=$!; echo \"$pid\" > " + shellQuote(remotePID) +
+		"; trap 'kill \"$pid\" 2>/dev/null; wait \"$pid\" 2>/dev/null; rm -f " + shellQuote(remotePID) +
+		"; exit' HUP INT TERM EXIT; wait \"$pid\""
 }
 
 func ControlPath(stateDir, user, host, port string) string {
@@ -245,6 +272,18 @@ func randomID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b[:]), nil
+}
+
+func remotePort(id string) int {
+	if len(id) < 4 {
+		return 22000
+	}
+	buf, err := hex.DecodeString(id[:4])
+	if err != nil || len(buf) != 2 {
+		return 22000
+	}
+	n := int(buf[0])<<8 | int(buf[1])
+	return 20000 + n%30000
 }
 
 func shellQuote(s string) string {
