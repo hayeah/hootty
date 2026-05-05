@@ -31,12 +31,17 @@ type Remote struct {
 }
 
 func NewRemote(t testing.TB, cols, rows uint16) *Remote {
+	return NewRemoteWithOptions(t, cols, rows)
+}
+
+func NewRemoteWithOptions(t testing.TB, cols, rows uint16, opts ...supervisor.LibghosttyOption) *Remote {
 	t.Helper()
 	master, slave, err := pty.Open()
 	if err != nil {
 		t.Fatalf("pty.Open: %v", err)
 	}
-	ptyImpl, err := supervisor.NewLibghosttyPTY(master, cols, rows, supervisor.WithLibghosttyScrollback(200))
+	allOpts := append([]supervisor.LibghosttyOption{supervisor.WithLibghosttyScrollback(200)}, opts...)
+	ptyImpl, err := supervisor.NewLibghosttyPTY(master, cols, rows, allOpts...)
 	if err != nil {
 		_ = slave.Close()
 		_ = master.Close()
@@ -137,6 +142,24 @@ func (lt *LocalTerminal) WaitText(t testing.TB, want string) {
 	t.Fatalf("timed out waiting for local text %q; last=%q", want, lt.PlainText(t))
 }
 
+func (lt *LocalTerminal) WaitRawText(t testing.TB, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		lt.mu.Lock()
+		got := lt.raw.String()
+		lt.mu.Unlock()
+		if strings.Contains(got, want) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	lt.mu.Lock()
+	got := lt.raw.String()
+	lt.mu.Unlock()
+	t.Fatalf("timed out waiting for local raw text %q; last=%q", want, got)
+}
+
 func (lt *LocalTerminal) Resize(t testing.TB, cols, rows uint16) {
 	t.Helper()
 	lt.mu.Lock()
@@ -223,6 +246,13 @@ func (lt *LocalTerminal) Snapshot(t testing.TB) string {
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+func (lt *LocalTerminal) RawSnapshot(t testing.TB) string {
+	t.Helper()
+	lt.mu.Lock()
+	defer lt.mu.Unlock()
+	return VisualizeVT(lt.raw.Bytes())
 }
 
 func VisualizeVT(vt []byte) string {
