@@ -120,19 +120,29 @@ PTY winsize is negotiated as `min(cols)`, `min(rows)` across all
 connected attaches; the negotiated size is broadcast back to every
 attach as a `Size` frame whenever it changes.
 
-Initial replay: a libghostty-formatted VT snapshot is sent as the
-first output frame, then the connection switches to live. On the
-primary screen this is the active screen's viewport + scrollback up to
-`max_scrollback`, plus cursor position, active SGR style, and
-non-default modes. If the child is currently on an alternate screen
-(tmux, vim, less, etc.), the snapshot is ordered as primary scrollback
-first, then alternate-screen entry and the active alternate contents.
-That builds both screen buffers in the attaching terminal, so the
-later live alternate-screen exit restores the recorded primary
-scrollback rather than the attach client's previously empty local
-primary. The snapshot subscribe pair is race-free — both happen on the
-dispatcher goroutine, so live chunks delivered after subscribe carry
-no overlap with the snapshot.
+Initial replay is phased. The server sends two libghostty-formatted
+snapshot frames: `MsgSnapshotScrollback` for history, then
+`MsgSnapshotScreen` for the visible viewport plus cursor position,
+active SGR style, and non-default modes. The client writes a plain
+`[connected. <session> @ <host>]` banner, prints the scrollback into
+local history, clears only the local viewport with `ESC[H ESC[2J`,
+then paints the visible screen and switches to live `MsgOutput`
+frames. This keeps pre-attach local scrollback intact while preventing
+stale local viewport rows from bleeding through short remote screens.
+
+If the child is currently on an alternate screen (tmux, vim, less,
+etc.), attach currently preserves the legacy full-snapshot fallback in
+the visible-screen phase. That builds both screen buffers in the
+attaching terminal, so the later live alternate-screen exit restores
+the recorded primary scrollback rather than the attach client's
+previously empty local primary. The snapshot subscribe pair is
+race-free — both happen on the dispatcher goroutine, so live chunks
+delivered after subscribe carry no overlap with the snapshot.
+
+On detach, the client locally leaves alt screen defensively, resets
+SGR, shows the cursor, clears only the viewport, and prints
+`[disconnected. <session> @ <host>]` before exiting. None of these
+cleanup bytes are written to the remote PTY or other attached clients.
 
 The previous `--no-full-replay` flag and the alternative `pty.log`
 replay arm were removed. Replaying raw `pty.log` re-issued every

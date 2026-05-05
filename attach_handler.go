@@ -173,28 +173,22 @@ func (h *attachHandler) serveOne(conn io.ReadWriteCloser, bufrw *bufio.ReadWrite
 	}
 
 	// Subscribe to live atomically with snapshotting the screen. Both
-	// happen on the dispatcher goroutine, so the snapshot we send and
-	// the live chunks the subscriber sees are causally ordered with no
-	// gap or duplication: the snapshot reflects the emulator's state up
-	// to (but not including) any live chunk that arrives on the channel.
-	liveCh, snap, cancelSub, err := h.pty.SubscribeWithSnapshot()
+	// happen on the dispatcher goroutine, so the snapshot parts we send
+	// and the live chunks the subscriber sees are causally ordered with
+	// no gap or duplication: the snapshot reflects the emulator's state
+	// up to (but not including) any live chunk that arrives on the channel.
+	liveCh, scrollback, screen, cancelSub, err := h.pty.SubscribeWithSnapshotParts()
 	if err != nil {
 		return fmt.Errorf("snapshot: %w", err)
 	}
 	defer cancelSub()
 
-	// Initial replay: a libghostty VT snapshot. If the child is on the
-	// alternate screen, Snapshot prefixes the primary mirror's scrollback
-	// before entering alt and painting the active alt screen, so a later
-	// live alt-screen exit restores the correct primary scrollback.
-	//
-	// Snapshot is the only replay mode — full pty.log replay was removed
-	// because it re-issues every terminal query the child ever sent,
-	// which the real terminal would dutifully answer back into the
-	// child's stdin. See spec.md / docs/tasks/<slug>/spec.md.
-	if len(snap) > 0 {
-		send(attachwire.MsgOutput, snap)
-	}
+	// Initial replay is split into history and visible-screen phases so
+	// the client can place history in local scrollback, clear only the
+	// viewport, then paint the visible screen on a known blank canvas.
+	// Empty frames are intentional phase markers for the client.
+	send(attachwire.MsgSnapshotScrollback, scrollback)
+	send(attachwire.MsgSnapshotScreen, screen)
 
 	// Now spool any chunks the live subscription has buffered (these
 	// are post-recOffset bytes) and continue forwarding live. Run in

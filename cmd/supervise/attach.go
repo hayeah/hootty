@@ -93,6 +93,7 @@ retries forever. Press any key to wake the backoff and retry now.
 
 	var dial dialFn
 	var reconnect bool
+	var label attachLabel
 	if *host != "" {
 		base, err := parseHostFlag(*host)
 		if err != nil {
@@ -101,6 +102,7 @@ retries forever. Press any key to wake the backoff and retry now.
 		}
 		dial = remoteDialer(base, rest[0])
 		reconnect = !*noReconnect
+		label = attachLabel{Session: rest[0], Host: *host}
 	} else {
 		store := supervisor.NewStore(*stateDir)
 		state, err := store.Resolve(rest[0])
@@ -110,9 +112,10 @@ retries forever. Press any key to wake the backoff and retry now.
 		}
 		sockPath := filepath.Join(*stateDir, state.Supervisor.Key, "rpc.sock")
 		dial = localDialer(sockPath)
+		label = attachLabel{Session: state.Supervisor.Key, Host: "local"}
 	}
 
-	exitCode, err := runAttachLoop(dial, prefixByte, reconnect)
+	exitCode, err := runAttachLoop(dial, prefixByte, reconnect, label)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "supervise attach: %v\n", err)
 	}
@@ -124,14 +127,31 @@ retries forever. Press any key to wake the backoff and retry now.
 // attachwire frames in both directions.
 type dialFn func(ctx context.Context) (net.Conn, error)
 
+type attachLabel struct {
+	Session string
+	Host    string
+}
+
+type attachWriters struct {
+	stdout io.Writer
+	stderr io.Writer
+}
+
 // runAttachLoop is the top-level driver. It owns termios, signal
 // traps, the stdin reader and SIGWINCH watcher; everything below
 // re-runs per attempt across reconnects.
 //
 // Returns the process exit code and an optional error to print.
-func runAttachLoop(dial dialFn, prefixByte byte, reconnect bool) (int, error) {
+func runAttachLoop(dial dialFn, prefixByte byte, reconnect bool, label attachLabel) (int, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	writers := attachWriters{stdout: os.Stdout, stderr: os.Stderr}
+	var attached atomic.Bool
+	defer func() {
+		if attached.Load() {
+			emitDetach(writers.stdout, label)
+		}
+	}()
 
 	// Signal trap. Raw-mode Ctrl-C is just a byte forwarded to the
 	// remote, so SIGINT here is from `kill -INT` not the keyboard.
@@ -159,9 +179,6 @@ func runAttachLoop(dial dialFn, prefixByte byte, reconnect bool) (int, error) {
 		}
 		defer func() {
 			_ = term.Restore(int(os.Stdin.Fd()), oldState)
-			// Belt-and-suspenders for a child that left altscreen on
-			// or hid the cursor or set weird SGR.
-			_, _ = os.Stderr.Write([]byte("\x1b[?1049l\x1b[?25h\x1b[0m"))
 		}()
 	}
 
@@ -213,7 +230,7 @@ func runAttachLoop(dial dialFn, prefixByte byte, reconnect bool) (int, error) {
 	}()
 
 	// Reconnect loop.
-	loopErr := runConnectLoop(ctx, dial, reconnect, &size, shared)
+	loopErr := runConnectLoop(ctx, dial, reconnect, &size, shared, label, &attached, writers)
 
 	// Determine exit code from outer signals.
 	select {
@@ -246,6 +263,9 @@ func runConnectLoop(
 	reconnect bool,
 	size *atomic.Uint64,
 	shared *sharedSession,
+	label attachLabel,
+	attached *atomic.Bool,
+	writers attachWriters,
 ) error {
 	gotConnectedOnce := false
 	for {
@@ -279,7 +299,7 @@ func runConnectLoop(
 		// Connected. Reset backoff and send Hello with current size.
 		shared.resetTier()
 		c, r := unpackSize(size.Load())
-		err = runSession(ctx, conn, c, r, shared)
+		err = runSession(ctx, conn, c, r, shared, label, attached, writers)
 		_ = conn.Close()
 
 		if ctx.Err() != nil {
@@ -300,7 +320,7 @@ func runConnectLoop(
 		// session is genuinely gone, the next dial returns 404 and we
 		// surface exit 2.
 		// Drop. Print disconnected line; wait for backoff.
-		fmt.Fprintf(os.Stderr,
+		fmt.Fprintf(writers.stderr,
 			"\r\n\x1b[2m[supervise: disconnected: %v]\x1b[0m\r\n", err)
 		if !waitBackoff(ctx, shared, "") {
 			return nil // ctx cancelled during backoff = clean detach
@@ -323,6 +343,9 @@ func runSession(
 	conn net.Conn,
 	cols, rows uint16,
 	shared *sharedSession,
+	label attachLabel,
+	attached *atomic.Bool,
+	writers attachWriters,
 ) error {
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
 	defer sessionCancel()
@@ -373,7 +396,7 @@ func runSession(
 	r := bufio.NewReader(conn)
 	serverDone := make(chan error, 1)
 	go func() {
-		serverDone <- runServerLoop(sessionCtx, r)
+		serverDone <- runServerLoop(sessionCtx, r, label, attached, writers)
 	}()
 
 	// Wait for either side to finish.
@@ -479,9 +502,11 @@ func runStdinFSM(ctx context.Context, prefix byte, shared *sharedSession, cancel
 }
 
 // runServerLoop reads frames from the server and dispatches them.
-// Output → stdout. Size → stderr status line. Returns on EOF or
-// protocol error.
-func runServerLoop(ctx context.Context, r *bufio.Reader) error {
+// Snapshot parts are locally phased into connect banner, scrollback,
+// viewport clear, and visible screen. Live Output writes straight to
+// stdout. Size reports go to stderr. Returns on EOF or protocol error.
+func runServerLoop(ctx context.Context, r *bufio.Reader, label attachLabel, attached *atomic.Bool, writers attachWriters) error {
+	connectEmitted := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -493,8 +518,33 @@ func runServerLoop(ctx context.Context, r *bufio.Reader) error {
 			return err
 		}
 		switch typ {
+		case attachwire.MsgSnapshotScrollback:
+			if !connectEmitted {
+				emitConnect(writers.stdout, label)
+				connectEmitted = true
+				attached.Store(true)
+			}
+			if len(payload) > 0 {
+				if _, werr := writers.stdout.Write(payload); werr != nil {
+					return werr
+				}
+			}
+		case attachwire.MsgSnapshotScreen:
+			if !connectEmitted {
+				emitConnect(writers.stdout, label)
+				connectEmitted = true
+				attached.Store(true)
+			}
+			if _, werr := writers.stdout.Write([]byte("\x1b[H\x1b[2J")); werr != nil {
+				return werr
+			}
+			if len(payload) > 0 {
+				if _, werr := writers.stdout.Write(payload); werr != nil {
+					return werr
+				}
+			}
 		case attachwire.MsgOutput:
-			if _, werr := os.Stdout.Write(payload); werr != nil {
+			if _, werr := writers.stdout.Write(payload); werr != nil {
 				return werr
 			}
 		case attachwire.MsgSize:
@@ -502,7 +552,7 @@ func runServerLoop(ctx context.Context, r *bufio.Reader) error {
 			if err := json.Unmarshal(payload, &sz); err == nil {
 				lc, lr := localSize()
 				if lc != 0 && (sz.Cols != lc || sz.Rows != lr) {
-					fmt.Fprintf(os.Stderr,
+					fmt.Fprintf(writers.stderr,
 						"\r\n\x1b[2m[supervise: remote pty %d×%d, your terminal %d×%d]\x1b[0m\r\n",
 						sz.Cols, sz.Rows, lc, lr)
 				}
@@ -513,6 +563,14 @@ func runServerLoop(ctx context.Context, r *bufio.Reader) error {
 			return fmt.Errorf("server sent unknown frame type 0x%02x", typ)
 		}
 	}
+}
+
+func emitConnect(w io.Writer, label attachLabel) {
+	fmt.Fprintf(w, "\r\n[connected. %s @ %s]\r\n", label.Session, label.Host)
+}
+
+func emitDetach(w io.Writer, label attachLabel) {
+	fmt.Fprintf(w, "\x1b[?1049l\x1b[0m\x1b[?25h\x1b[H\x1b[2J\r\n[disconnected. %s @ %s]\r\n", label.Session, label.Host)
 }
 
 // sharedSession is the cross-goroutine bus connecting the stdin/

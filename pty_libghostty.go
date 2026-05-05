@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -419,6 +420,25 @@ func (p *LibghosttyPTY) Snapshot() ([]byte, error) {
 	return out, ferr
 }
 
+// SnapshotParts returns the current main-screen snapshot split into
+// scrollback history and visible-screen replay bytes.
+//
+// The scrollback part is intended to be printed into the attaching
+// terminal's scrollback ring before the client clears the viewport.
+// The screen part is then painted onto that blank viewport and includes
+// the formatter's cursor/style/mode restore bytes.
+//
+// Alternate-screen snapshots intentionally retain the legacy full
+// snapshot in the screen part. Alt-screen attach has different
+// invariants and is handled by a separate protocol pass; preserving the
+// old primary+alternate replay avoids regressing live alt-screen exit.
+func (p *LibghosttyPTY) SnapshotParts() (scrollback, screen []byte, err error) {
+	p.do(func() {
+		scrollback, screen, err = p.snapshotPartsLocked()
+	})
+	return scrollback, screen, err
+}
+
 func (p *LibghosttyPTY) snapshotLocked() ([]byte, error) {
 	if p.term == nil {
 		return nil, errors.New("pty closed")
@@ -441,6 +461,21 @@ func (p *LibghosttyPTY) snapshotLocked() ([]byte, error) {
 	return append(primary, alt...), nil
 }
 
+func (p *LibghosttyPTY) snapshotPartsLocked() ([]byte, []byte, error) {
+	if p.term == nil {
+		return nil, nil, errors.New("pty closed")
+	}
+	active, err := p.term.ActiveScreen()
+	if err != nil {
+		return nil, nil, err
+	}
+	if active == libghostty.ScreenAlternate {
+		snap, err := p.snapshotLocked()
+		return nil, snap, err
+	}
+	return formatTerminalSnapshotParts(p.term)
+}
+
 func formatTerminalSnapshot(term *libghostty.Terminal) ([]byte, error) {
 	f, err := libghostty.NewFormatter(term,
 		libghostty.WithFormatterFormat(libghostty.FormatterFormatVT),
@@ -454,6 +489,36 @@ func formatTerminalSnapshot(term *libghostty.Terminal) ([]byte, error) {
 	}
 	defer f.Close()
 	return f.Format()
+}
+
+func formatTerminalSnapshotParts(term *libghostty.Terminal) ([]byte, []byte, error) {
+	snap, err := formatTerminalSnapshot(term)
+	if err != nil {
+		return nil, nil, err
+	}
+	scrollbackRows, err := term.ScrollbackRows()
+	if err != nil {
+		return nil, nil, err
+	}
+	scrollback, screen := splitSnapshotRows(snap, scrollbackRows)
+	return scrollback, screen, nil
+}
+
+func splitSnapshotRows(snap []byte, scrollbackRows uint) (scrollback, screen []byte) {
+	if scrollbackRows == 0 || len(snap) == 0 {
+		return nil, snap
+	}
+	rest := snap
+	cut := 0
+	for i := uint(0); i < scrollbackRows; i++ {
+		idx := bytes.Index(rest, []byte("\r\n"))
+		if idx < 0 {
+			return snap, nil
+		}
+		cut += idx + len("\r\n")
+		rest = rest[idx+len("\r\n"):]
+	}
+	return snap[:cut], snap[cut:]
 }
 
 // subscribe registers a channel to receive live PTY bytes. Returns
@@ -547,6 +612,48 @@ func (p *LibghosttyPTY) SubscribeWithSnapshot() (<-chan []byte, []byte, func(), 
 		})
 	}
 	return ch, snap, cancel, nil
+}
+
+// SubscribeWithSnapshotParts registers a live subscriber and captures a
+// split snapshot in one dispatcher action. The returned parts reflect
+// all PTY bytes processed before the subscription was installed; live
+// chunks delivered on the channel are strictly after that snapshot.
+func (p *LibghosttyPTY) SubscribeWithSnapshotParts() (<-chan []byte, []byte, []byte, func(), error) {
+	ch := make(chan []byte, 256)
+	sub := &subscriber{ch: ch}
+	var scrollback []byte
+	var screen []byte
+	var snapErr error
+	ran := false
+	p.do(func() {
+		ran = true
+		if p.term == nil {
+			snapErr = errors.New("pty closed")
+			return
+		}
+		p.subs[ch] = sub
+		scrollback, screen, snapErr = p.snapshotPartsLocked()
+		if snapErr != nil {
+			delete(p.subs, ch)
+			close(ch)
+		}
+	})
+	if !ran {
+		close(ch)
+		return nil, nil, nil, nil, errors.New("pty closed")
+	}
+	if snapErr != nil {
+		return nil, nil, nil, nil, snapErr
+	}
+	cancel := func() {
+		p.do(func() {
+			if _, ok := p.subs[ch]; ok {
+				delete(p.subs, ch)
+				close(ch)
+			}
+		})
+	}
+	return ch, scrollback, screen, cancel, nil
 }
 
 // Recorder returns the recorder configured on this PTY (may be nil).
