@@ -82,18 +82,30 @@ Plus the always-present library routes:
 ## `hoot` CLI
 
 ```sh
-hoot run     [--state-dir <dir>] [--key <key>] -- <cmd> [args...]
-hoot list    [--state-dir <dir>]
-hoot resolve [--state-dir <dir>] <id-or-prefix>
-hoot attach  [--host <addr>] [--state-dir <dir>] [--no-reconnect]
+hoot run     [--remote <url>] [--state-dir <dir>] [--key <key>] -- <cmd> [args...]
+hoot list    [--remote <url>] [--state-dir <dir>]
+hoot resolve [--remote <url>] [--state-dir <dir>] <id-or-prefix>
+hoot attach  [--remote <url>] [--state-dir <dir>] [--no-reconnect]
                   [--no-ascii-cinema-playback]
                   [--ascii-cinema-playback-window <duration>]
                   [--ascii-cinema-playback-speed <float>]
                   [--prefix-key <key>] <id-or-prefix>
-hoot serve   [--state-dir <dir>] --bind <host:port> [--prefix /api]
+hoot serve   [--state-dir <dir>] --bind <host:port|unix:/path.sock> [--prefix /api]
 ```
 
 `--state-dir` defaults to `~/.hoot` for every subcommand.
+
+`--remote` targets another host for session-facing subcommands:
+
+- `host:port`, `http://host:port`, `https://host:port` talk to a
+  running `hoot serve`.
+- `ssh://host`, `ssh://user@host`, `ssh://user@host:2222` shell out to
+  OpenSSH, start a per-invocation remote `hoot serve --bind unix:<sock>`,
+  forward a local Unix socket to it, and then use the same HTTP API.
+
+The ssh transport inherits the user's OpenSSH config, agent,
+ProxyJump, hardware-key, and ControlMaster behavior. `hoot` must be in
+the remote login shell's `PATH`; no persistent remote server is required.
 
 `hoot list` emits JSONL — one line per session, each line a
 serialized `session.StateFile` (the same shape `<dir>/<key>/state.json`
@@ -199,26 +211,30 @@ Exit codes: `0` clean detach, `1` protocol/dial error, `2` argument
 error (or `404`/`409` from a remote `attach-raw`), `130` terminated by
 SIGINT/SIGTERM/SIGHUP we trapped.
 
-#### Remote attach (`--host`)
+#### Remote sessions (`--remote`)
 
-`attach --host` connects to a `hoot serve` host instead of dialing
-a local `rpc.sock`. The server resolves the short id and bridges the
-HTTP/1.1 `Upgrade: hoot-attach/1` straight through to its session's
-`rpc.sock` — same `attachwire` protocol, just transported over TCP (or
-TLS).
+With `--remote http://host:port`, `list`, `resolve`, `run`, and
+`attach` talk to a running `hoot serve` instead of the local state dir.
+Bare `host:port` is accepted as sugar for `http://host:port`.
+
+With `--remote ssh://host`, the local CLI starts a short-lived remote
+`hoot serve` over OpenSSH and forwards a local Unix socket to it. The
+remote only needs `hoot` in `PATH`; the user does not start `hoot serve`
+by hand.
 
 ```sh
-hoot attach --host m4mini:20000 abc          # bare host:port
-hoot attach --host http://m4mini:20000 abc   # explicit scheme
-hoot attach --host https://m4mini:443  abc   # TLS
+hoot list --remote ssh://devbox
+hoot run --remote ssh://devbox -- bash
+hoot resolve --remote ssh://devbox abc
+hoot attach --remote ssh://devbox abc
+
+hoot attach --remote m4mini:20000 abc          # bare host:port
+hoot attach --remote http://m4mini:20000 abc   # explicit scheme
+hoot attach --remote https://m4mini:443  abc   # TLS
 ```
 
-`--host` accepts:
-
-- `host:port` (defaults to `http://`)
-- `http://host:port` / `https://host[:port]`
-
-Auto-reconnect (default on `--host`, opt out with `--no-reconnect`):
+Auto-reconnect (default on `--remote` attach, opt out with
+`--no-reconnect`):
 
 - Backoff: 1s, 2s, 4s, 8s, 16s, 30s — capped at 30s, retries forever.
 - A status line on stderr counts down each tier in place: `[hoot:
@@ -240,6 +256,7 @@ UI can drive without dialing each session's `rpc.sock` directly
 
 ```sh
 hoot serve --bind 127.0.0.1:8080 --state-dir ~/.hoot [--prefix /api]
+hoot serve --bind unix:$HOME/.hoot/api.sock --state-dir ~/.hoot
 ```
 
 Routes (mounted at the bare path and — if `--prefix` is set — at
@@ -251,6 +268,7 @@ Routes (mounted at the bare path and — if `--prefix` is set — at
 | GET    | `/sessions`                 | `{sessions: [{...StateFile, alive}]}`                            |
 | POST   | `/sessions`                 | `{cmd \| argv, key?}` → forks `hoot __session`            |
 | GET    | `/sessions/{key}`           | state.json (alias of `/state`)                                  |
+| GET    | `/sessions/{key}/resolve`   | resolve full id or unique prefix                                |
 | DELETE | `/sessions/{key}`           | SIGTERM the session by pid (204)                              |
 | GET    | `/sessions/{key}/state`     | state.json                                                       |
 | GET    | `/sessions/{key}/events`    | SSE proxy of upstream `/events`                                  |
