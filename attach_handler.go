@@ -199,6 +199,9 @@ func (h *attachHandler) serveOne(conn io.ReadWriteCloser, bufrw *bufio.ReadWrite
 	// the client can place history in local scrollback, clear only the
 	// viewport, then paint the visible screen on a known blank canvas.
 	// Empty frames are intentional phase markers for the client.
+	// Optional asciicast playback is streamed after this visible-screen
+	// phase and before live output, so attach paints "where we are now"
+	// before replaying recent "how we got here" history.
 	send(attachwire.MsgSnapshotScrollback, scrollback)
 	send(attachwire.MsgSnapshotScreen, screen)
 

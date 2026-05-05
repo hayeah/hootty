@@ -1,8 +1,8 @@
 # supervisor
 
 A small Go library + reference CLI that supervises a single child process.
-The child is spawned on a libghostty-backed PTY; its raw output is teed to a
-file for replay; and the current screen state is exposed through an
+The child is spawned on a libghostty-backed PTY; its output is recorded as an
+asciicast v2 JSONL file for replay; and the current screen state is exposed through an
 embeddable `http.ServeMux` (plain text / HTML / raw VT).
 
 This is the slimmer cousin of `~/github.com/hayeah/dotfiles/libs/hayeah-go/supervisor`,
@@ -81,6 +81,9 @@ supervise run     [--state-dir <dir>] [--key <key>] -- <cmd> [args...]
 supervise list    [--state-dir <dir>]
 supervise resolve [--state-dir <dir>] <id-or-prefix>
 supervise attach  [--host <addr>] [--state-dir <dir>] [--no-reconnect]
+                  [--no-ascii-cinema-playback]
+                  [--ascii-cinema-playback-window <duration>]
+                  [--ascii-cinema-playback-speed <float>]
                   [--prefix-key <key>] <id-or-prefix>
 supervise serve   [--state-dir <dir>] --bind <host:port> [--prefix /api]
 ```
@@ -95,6 +98,11 @@ holds on disk). Pipe through `jq -s` if you want an array.
 master on fd 3 and stdio = slave), and serves the mux on
 `<dir>/<key>/rpc.sock`. The supervisor holds a flock on `<dir>/<key>/`
 for the lifetime of the supervised child.
+
+Each session directory also contains `pty.cast`, an asciicast v2 JSONL
+recording with a header line followed by output (`"o"`) and resize
+(`"r"`) events. It is valid input for `asciinema play`, `agg`, and
+`asciinema-player`. Input (`"i"`) events are not recorded.
 
 If `--key` is omitted, `supervise` generates a random short id (3–8
 chars drawn from `0-9a-z` minus `l` and `o`, collision-checked against
@@ -144,14 +152,24 @@ SGR, shows the cursor, clears only the viewport, and prints
 `[disconnected. <session> @ <host>]` before exiting. None of these
 cleanup bytes are written to the remote PTY or other attached clients.
 
+Asciicast playback is enabled by default on the first attach and is
+inserted after the visible-screen phase and before live output. The
+default window is the last 5 minutes of output, replayed at 8x with
+long idle gaps capped so attach reaches live promptly. Override with
+`--ascii-cinema-playback-window <duration>` (`0` = full cast) and
+`--ascii-cinema-playback-speed <float>`, or skip it entirely with
+`--no-ascii-cinema-playback`. Remote reconnects do not replay the cast
+again; they repaint with the phased snapshot and go straight to live.
+
 The previous `--no-full-replay` flag and the alternative `pty.log`
 replay arm were removed. Replaying raw `pty.log` re-issued every
 terminal-query escape the child ever sent (`DA`, `DSR`, `OSC 11 ?`,
 …) which the user's real terminal would dutifully answer back into
 the child's stdin — the same root cause as the live "junk chars
 after tmux detach" symptom, just spread across the whole session.
-The recorder still writes `pty.log` for offline analysis; it's just
-not the source for attach replay.
+The recorder now writes `pty.cast` for offline playback; attach playback
+filters its output through the same terminal-query stripper used by live
+fanout before bytes reach the user's real terminal.
 
 Live fanout strips terminal-query escape sequences before sending
 to the user's real terminal (the libghostty emulator on the

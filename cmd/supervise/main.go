@@ -58,6 +58,7 @@ Usage:
   supervise list    [--state-dir <d>]
   supervise resolve [--state-dir <d>] <id-or-prefix>
   supervise attach  [--host <addr>] [--state-dir <d>] [--no-reconnect]
+                    [--no-ascii-cinema-playback]
                     [--prefix-key <key>] <id-or-prefix>
   supervise serve   [--state-dir <d>] --bind <host:port> [--prefix /api]
 
