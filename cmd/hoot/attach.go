@@ -166,6 +166,11 @@ type attachPlaybackConfig struct {
 	Speed   float64
 }
 
+const (
+	attachHeartbeatInterval = 200 * time.Millisecond
+	attachHeartbeatTimeout  = 800 * time.Millisecond
+)
+
 // runAttachLoop is the top-level driver. It owns termios, signal
 // traps, the stdin reader and SIGWINCH watcher; everything below
 // re-runs per attempt across reconnects.
@@ -390,6 +395,11 @@ func runSession(
 		payload []byte
 	}
 	outCh := make(chan outMsg, 256)
+	var lastSent atomic.Int64
+	var lastRecv atomic.Int64
+	now := time.Now().UnixNano()
+	lastSent.Store(now)
+	lastRecv.Store(now)
 	writerDone := make(chan error, 1)
 	go func() {
 		var werr error
@@ -398,6 +408,7 @@ func runSession(
 				werr = err
 				break
 			}
+			lastSent.Store(time.Now().UnixNano())
 		}
 		writerDone <- werr
 	}()
@@ -433,11 +444,37 @@ func runSession(
 		return errors.New("ctx cancelled before Hello")
 	}
 
+	heartbeatDone := make(chan struct{})
+	go func() {
+		defer close(heartbeatDone)
+		pingTicker := time.NewTicker(attachHeartbeatInterval)
+		defer pingTicker.Stop()
+		watchdogTicker := time.NewTicker(attachHeartbeatInterval / 2)
+		defer watchdogTicker.Stop()
+		for {
+			select {
+			case <-pingTicker.C:
+				if time.Since(time.Unix(0, lastSent.Load())) > attachHeartbeatInterval {
+					send(attachwire.MsgPing, nil)
+				}
+			case <-watchdogTicker.C:
+				if time.Since(time.Unix(0, lastRecv.Load())) > attachHeartbeatTimeout {
+					_ = conn.Close()
+					return
+				}
+			case <-sessionCtx.Done():
+				return
+			}
+		}
+	}()
+
 	// Server-read loop (in this goroutine, since we own the lifetime).
 	r := bufio.NewReader(conn)
 	serverDone := make(chan error, 1)
 	go func() {
-		serverDone <- runServerLoop(sessionCtx, r, label, attached, writers)
+		serverDone <- runServerLoop(sessionCtx, r, label, attached, writers, func() {
+			lastRecv.Store(time.Now().UnixNano())
+		})
 	}()
 
 	// Wait for either side to finish.
@@ -451,6 +488,7 @@ func runSession(
 
 	sessionCancel()
 	_ = conn.Close()
+	<-heartbeatDone
 	close(outCh)
 	<-writerDone
 	// Drain serverDone if it hasn't fired yet.
@@ -546,7 +584,7 @@ func runStdinFSM(ctx context.Context, prefix byte, shared *sharedSession, cancel
 // Snapshot parts are locally phased into connect banner, scrollback,
 // viewport clear, and visible screen. Live Output writes straight to
 // stdout. Size reports go to stderr. Returns on EOF or protocol error.
-func runServerLoop(ctx context.Context, r *bufio.Reader, label attachLabel, attached *atomic.Bool, writers attachWriters) error {
+func runServerLoop(ctx context.Context, r *bufio.Reader, label attachLabel, attached *atomic.Bool, writers attachWriters, markRecv func()) error {
 	connectEmitted := false
 	for {
 		select {
@@ -557,6 +595,9 @@ func runServerLoop(ctx context.Context, r *bufio.Reader, label attachLabel, atta
 		typ, payload, err := attachwire.ReadFrame(r)
 		if err != nil {
 			return err
+		}
+		if markRecv != nil {
+			markRecv()
 		}
 		switch typ {
 		case attachwire.MsgSnapshotScrollback:
@@ -598,7 +639,9 @@ func runServerLoop(ctx context.Context, r *bufio.Reader, label attachLabel, atta
 						sz.Cols, sz.Rows, lc, lr)
 				}
 			}
-		case attachwire.MsgHello, attachwire.MsgInput:
+		case attachwire.MsgPong:
+			// Heartbeat response; activity was recorded above.
+		case attachwire.MsgHello, attachwire.MsgInput, attachwire.MsgPing:
 			return fmt.Errorf("server sent unexpected frame type 0x%02x", typ)
 		default:
 			return fmt.Errorf("server sent unknown frame type 0x%02x", typ)

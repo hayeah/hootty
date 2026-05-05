@@ -9,8 +9,8 @@
 //	+--------+----------+---------+
 //
 // `len` is little-endian. Message types: Hello (C→S), Input
-// (C→S), Output (S→C live bytes), Size (both directions), and
-// snapshot parts (S→C initial attach replay).
+// (C→S), Output (S→C live bytes), Size (both directions), Ping/Pong
+// heartbeat frames, and snapshot parts (S→C initial attach replay).
 //
 // See `docs/tasks/<slug>/spec.md` (or the design note at
 // hoot-attach-spec_claude.md) for the full protocol.
@@ -34,6 +34,9 @@ const (
 
 	MsgSnapshotScrollback byte = 0x04
 	MsgSnapshotScreen     byte = 0x05
+
+	MsgPing byte = 0x06
+	MsgPong byte = 0x07
 )
 
 // MaxPayload is a sanity cap on a single frame payload. The replay

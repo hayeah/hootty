@@ -256,7 +256,7 @@ func (h *attachHandler) serveOne(conn io.ReadWriteCloser, bufrw *bufio.ReadWrite
 	// Client reader loop. Runs on this goroutine. Handles Input
 	// (raw bytes to master), Size (client SIGWINCH), and any spurious
 	// Hello (rejected).
-	readErr := h.clientReadLoop(bufrw, ac)
+	readErr := h.clientReadLoop(bufrw, ac, send)
 
 	// Tear down: cancel subscription so the live goroutine exits;
 	// close outCh so the writer goroutine exits.
@@ -341,7 +341,7 @@ func streamAsciiCinemaPlayback(path string, cfg asciiCinemaPlaybackConfig, send 
 
 // clientReadLoop reads framed messages from the client until EOF or
 // a protocol error.
-func (h *attachHandler) clientReadLoop(bufrw *bufio.ReadWriter, ac *attachConn) error {
+func (h *attachHandler) clientReadLoop(bufrw *bufio.ReadWriter, ac *attachConn, send func(byte, []byte)) error {
 	for {
 		typ, payload, err := attachwire.ReadFrame(bufrw)
 		if err != nil {
@@ -361,10 +361,12 @@ func (h *attachHandler) clientReadLoop(bufrw *bufio.ReadWriter, ac *attachConn) 
 				continue
 			}
 			h.set.Update(ac, attachWinsize{Cols: ws.Cols, Rows: ws.Rows})
+		case attachwire.MsgPing:
+			send(attachwire.MsgPong, nil)
 		case attachwire.MsgHello:
 			return errors.New("unexpected Hello after handshake")
-		case attachwire.MsgOutput:
-			return errors.New("unexpected Output from client")
+		case attachwire.MsgOutput, attachwire.MsgPong:
+			return fmt.Errorf("unexpected frame from client: 0x%02x", typ)
 		default:
 			return fmt.Errorf("unknown frame type 0x%02x", typ)
 		}
