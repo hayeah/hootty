@@ -7,7 +7,7 @@ PKG_CONFIG_PATH := $(LIBGHOSTTY)/build/_deps/ghostty-src/zig-out/share/pkgconfig
 export PKG_CONFIG_PATH
 
 build:
-	go build -o bin/supervise ./cmd/supervise
+	go build -o bin/hoot ./cmd/hoot
 
 test:
 	go test ./...

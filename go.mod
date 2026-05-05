@@ -1,4 +1,4 @@
-module github.com/hayeah/supervisor
+module github.com/hayeah/hootty
 
 go 1.26.0
 

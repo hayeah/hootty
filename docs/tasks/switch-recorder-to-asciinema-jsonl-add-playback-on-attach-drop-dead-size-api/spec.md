@@ -14,9 +14,9 @@ Replace the raw PTY byte log with an asciicast v2 JSONL recording that external 
   - Add `RecordResize(cols, rows uint16)` writing `[t, "r", "COLSxROWS"]`.
   - Do not record input events for now; the attach client only sends input to the PTY master, and recording user input would need a privacy decision plus different placement than the output tee.
   - Add a small reader for playback events that returns bounded output events from the cast file.
-- `cmd/supervise/supervise.go`
+- `cmd/hoot/hoot.go`
   - Create `pty.cast` instead of `pty.log`.
-  - Pass initial cols/rows and the supervised command string into the recorder header.
+  - Pass initial cols/rows and the managed command string into the recorder header.
 - `pty_libghostty.go`
   - Drop `Recorder.Size`.
   - Change `SubscribeAtRecord()` to return `(<-chan []byte, func())`.
@@ -33,7 +33,7 @@ Replace the raw PTY byte log with an asciicast v2 JSONL recording that external 
   - If enabled, read bounded output events from `pty.cast`, filter them through a fresh `vtQueryStripper`, and stream them as `MsgOutput` at accelerated timing.
   - Live chunks are already buffered by the subscription. After playback ends, drain and forward `liveCh`; this preserves the existing byte-clean cutover property.
   - Ignore cast `"r"` resize events during attach playback. Attach size is controlled by the current attach set; historical resizes are for asciinema playback tools, not for the live terminal.
-- `cmd/supervise/attach.go`
+- `cmd/hoot/attach.go`
   - Add `--no-ascii-cinema-playback`.
   - Add override flags `--ascii-cinema-playback-window <duration>` and `--ascii-cinema-playback-speed <float>`.
   - Default playback is sent only on the first connection. Remote reconnect sends `ascii_cinema_playback=false` to avoid noisy replay on every reconnect.
@@ -53,7 +53,7 @@ Replace the raw PTY byte log with an asciicast v2 JSONL recording that external 
 
 - Remove `Recorder.Size` and the `SubscribeAtRecord` offset return; update tests and comments.
 - Implement asciicast v2 recorder output and resize events.
-- Switch internal supervisor state file from `pty.log` to `pty.cast`.
+- Switch internal hootty state file from `pty.log` to `pty.cast`.
 - Add cast playback reader and attach-handler playback streaming.
 - Add attach CLI flags and Hello fields, with first-connect-only reconnect behavior.
 - Update README and focused tests.
@@ -66,8 +66,8 @@ Replace the raw PTY byte log with an asciicast v2 JSONL recording that external 
 - `make test` or `go test ./...` passes.
 - A real session produces `<state-dir>/<key>/pty.cast` whose first line is an asciicast v2 header and whose output/resize events are JSONL.
 - `asciinema play <state-dir>/<key>/pty.cast` accepts the recording and replays it.
-- `supervise attach <key>` shows the snapshot, replays recent history, and then forwards a new live marker typed after playback.
-- `supervise attach --no-ascii-cinema-playback <key>` skips playback and still forwards live output.
+- `hoot attach <key>` shows the snapshot, replays recent history, and then forwards a new live marker typed after playback.
+- `hoot attach --no-ascii-cinema-playback <key>` skips playback and still forwards live output.
 - Reattach to a tmux session after a query-heavy startup; playback bytes and live bytes are stripped of terminal-query probes and live cutover remains clean.
 
 ## Open questions

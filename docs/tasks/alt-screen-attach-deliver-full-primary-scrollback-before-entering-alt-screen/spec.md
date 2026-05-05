@@ -2,9 +2,9 @@
 
 ## Goal
 
-When a client attaches while the child is on an alternate screen, supervisor must first populate the client's primary screen with the recorded primary scrollback, then switch the client into the alternate screen and paint the live alternate contents. The fix should preserve the existing live fanout behavior: when the child later exits alternate screen, the client terminal should restore the already-populated primary screen instead of an empty local primary.
+When a client attaches while the child is on an alternate screen, hootty must first populate the client's primary screen with the recorded primary scrollback, then switch the client into the alternate screen and paint the live alternate contents. The fix should preserve the existing live fanout behavior: when the child later exits alternate screen, the client terminal should restore the already-populated primary screen instead of an empty local primary.
 
-Out of scope: changing Ghostty upstream in this task. The source dive below identifies a small upstream API that would be cleaner long-term, but the implementation here should ship in `github.com/hayeah/supervisor` without vendoring a libghostty fork.
+Out of scope: changing Ghostty upstream in this task. The source dive below identifies a small upstream API that would be cleaner long-term, but the implementation here should ship in `github.com/hayeah/hootty` without vendoring a libghostty fork.
 
 ## Source findings
 
@@ -29,7 +29,7 @@ Out of scope: changing Ghostty upstream in this task. The source dive below iden
 - `src/terminal/ScreenSet.zig:57-74` has `get` and `getInit` for primary/alternate screens.
 - `src/terminal/Terminal.zig:2971-3029` exposes an internal `switchScreen` method, and `src/terminal/Terminal.zig:3041-3108` handles destructive VT mode toggling. Borrowing those semantics through VT writes would mutate the live terminal, so it is not a safe attach snapshot primitive.
 
-Conclusion: the fourth option exists as an upstreamable API, not as a public API today. A small upstream patch could add a screen selector to `GhosttyFormatterTerminalOptions`, plumb it through `src/terminal/c/formatter.zig`, and have `TerminalFormatter` use `terminal.screens.get(screen)` or expose a C `formatter_screen_new`. The task can ship sooner and with less dependency churn by maintaining a primary-only mirror in supervisor.
+Conclusion: the fourth option exists as an upstreamable API, not as a public API today. A small upstream patch could add a screen selector to `GhosttyFormatterTerminalOptions`, plumb it through `src/terminal/c/formatter.zig`, and have `TerminalFormatter` use `terminal.screens.get(screen)` or expose a C `formatter_screen_new`. The task can ship sooner and with less dependency churn by maintaining a primary-only mirror in hootty.
 
 ## Architecture
 
@@ -91,7 +91,7 @@ Commands:
 
 Expected behavioral proof:
 
-- Build a supervisor terminal with more primary lines than the viewport.
+- Build a hootty terminal with more primary lines than the viewport.
 - Enter alternate screen and paint an alt marker.
 - Attach snapshot contains primary line markers before the alt marker.
 - Feed the attach snapshot into a fresh libghostty terminal and verify the fresh terminal is on alternate screen with alt marker visible.
@@ -99,11 +99,11 @@ Expected behavioral proof:
 
 ## Open questions
 
-None. The supervisor-side mirror is the least dependency-heavy shippable route. The upstream `ScreenFormatter` selector remains a cleanup opportunity after this behavior is covered by tests.
+None. The hootty-side mirror is the least dependency-heavy shippable route. The upstream `ScreenFormatter` selector remains a cleanup opportunity after this behavior is covered by tests.
 
 ## Design notes
 
-- 2026-05-05T04:15Z - Picked supervisor-side primary mirror over a libghostty fork for this pass.
+- 2026-05-05T04:15Z - Picked hootty-side primary mirror over a libghostty fork for this pass.
   - New option discovered: Ghostty Zig internals already have `ScreenFormatter` for arbitrary `*Screen`, and `ScreenSet.get(.primary)` can access inactive primary state. This is cleaner than a mirror but is not exported through `include/ghostty/vt/formatter.h` or bound by go-libghostty.
   - Upstream patch shape is small but crosses three repositories/layers: Zig formatter options, generated/handwritten C header ABI, and Go binding. That is feasible but higher integration risk than a local mirror.
   - Destructive toggling lost because `Terminal.switchScreenMode(.@"1049", ...)` intentionally saves/restores cursor and clears alternate state; using it during attach would mutate the live emulator.

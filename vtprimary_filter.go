@@ -1,4 +1,4 @@
-package supervisor
+package hootty
 
 // vtPrimaryScreenFilter produces the byte stream for a primary-only
 // mirror terminal. It strips alternate-screen mode switches from the

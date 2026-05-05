@@ -1,4 +1,4 @@
-package supervisor
+package hootty
 
 import (
 	"bufio"
@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hayeah/supervisor/internal/attachwire"
+	"github.com/hayeah/hootty/internal/attachwire"
 )
 
 const (
@@ -29,7 +29,7 @@ type asciiCinemaPlaybackConfig struct {
 // expects an HTTP/1.1 Upgrade-style handshake; the client sends
 //
 //	GET /attach HTTP/1.1
-//	Upgrade: supervise-attach/1
+//	Upgrade: hoot-attach/1
 //	Connection: Upgrade
 //
 // the server replies 101 Switching Protocols and then both sides
@@ -84,7 +84,7 @@ func (h *attachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// w.WriteHeader(101) because Hijack already swallowed the
 	// response writer's chance to emit headers cleanly.
 	resp := "HTTP/1.1 101 Switching Protocols\r\n" +
-		"Upgrade: supervise-attach/1\r\n" +
+		"Upgrade: hoot-attach/1\r\n" +
 		"Connection: Upgrade\r\n\r\n"
 	if _, err := bufrw.WriteString(resp); err != nil {
 		return

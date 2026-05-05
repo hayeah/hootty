@@ -1,4 +1,4 @@
-package supervisor
+package hootty
 
 import (
 	"encoding/json"

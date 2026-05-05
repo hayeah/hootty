@@ -1,4 +1,4 @@
-package supervisor
+package hootty
 
 import (
 	"encoding/json"
@@ -8,10 +8,10 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/hayeah/supervisor/internal/shortid"
+	"github.com/hayeah/hootty/internal/shortid"
 )
 
-// Store reads supervised process state from a directory of directories.
+// Store reads managed process state from a directory of directories.
 type Store struct {
 	Dir string // e.g. ~/.agentboss/ or .devport/
 }
@@ -56,13 +56,13 @@ func (s *Store) List() ([]*StateFile, error) {
 		states = append(states, state)
 	}
 	sort.Slice(states, func(i, j int) bool {
-		return states[i].Supervisor.CreatedAt.Before(states[j].Supervisor.CreatedAt)
+		return states[i].Hootty.CreatedAt.Before(states[j].Hootty.CreatedAt)
 	})
 	return states, nil
 }
 
 // IsAlive probes the directory flock for the given key.
-// Returns true if a supervisor currently holds the lock.
+// Returns true if a hootty currently holds the lock.
 func (s *Store) IsAlive(key string) bool {
 	return ProbeFlock(filepath.Join(s.Dir, key))
 }
@@ -136,7 +136,7 @@ func (w *Writer) Update(fn func(*StateFile)) error {
 
 // UpdateState marshals the provided value into the "state" section
 // of state.json. This is the method Services call (directly or
-// through Supervisor.UpdateState, which additionally publishes to
+// through Hootty.UpdateState, which additionally publishes to
 // /events subscribers).
 func (w *Writer) UpdateState(state any) error {
 	return w.Update(func(s *StateFile) {

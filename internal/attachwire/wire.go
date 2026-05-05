@@ -1,5 +1,5 @@
 // Package attachwire defines the tiny TLV protocol that
-// `supervise attach` and the supervisor's attach handler speak over
+// `hoot attach` and the hootty's attach handler speak over
 // a single hijacked rpc.sock connection.
 //
 // Frame format:
@@ -13,7 +13,7 @@
 // snapshot parts (S→C initial attach replay).
 //
 // See `docs/tasks/<slug>/spec.md` (or the design note at
-// supervise-attach-spec_claude.md) for the full protocol.
+// hoot-attach-spec_claude.md) for the full protocol.
 package attachwire
 
 import (
