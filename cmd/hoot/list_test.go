@@ -65,6 +65,37 @@ func TestCmdResolveRemote(t *testing.T) {
 	}
 }
 
+func TestCmdRunRemote(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/sessions" {
+			t.Fatalf("request = %s %s, want POST /sessions", r.Method, r.URL.Path)
+		}
+		var body createSessionReq
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body.Key != "abc123" || strings.Join(body.Argv, " ") != "bash -lc echo hi" {
+			t.Fatalf("body = %+v", body)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session": map[string]any{"key": "abc123"},
+			"state":   map[string]any{},
+			"alive":   true,
+		})
+	}))
+	defer server.Close()
+
+	out := captureStdout(t, func() {
+		if err := cmdRun([]string{"--remote", server.Listener.Addr().String(), "--key", "abc123", "--", "bash", "-lc", "echo hi"}); err != nil {
+			t.Fatalf("cmdRun: %v", err)
+		}
+	})
+	if strings.TrimSpace(out) != "abc123" {
+		t.Fatalf("output = %q, want abc123", out)
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	old := os.Stdout

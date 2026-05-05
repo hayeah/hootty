@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,12 +32,47 @@ func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
 	key := fs.String("key", "", "session key (default: random short id)")
+	remoteFlag := fs.String("remote", "", "remote hoot serve URL (http://host:port, host:port, or ssh://host)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
 		return errors.New("run: missing command after --")
+	}
+
+	remote, err := parseRemoteFlag(*remoteFlag, *stateDir)
+	if err != nil {
+		return err
+	}
+	if remote != nil {
+		defer remote.Close()
+		payload, err := json.Marshal(createSessionReq{Argv: rest, Key: *key})
+		if err != nil {
+			return err
+		}
+		resp, err := httpClient(remote).Post("http://hoot/sessions", "application/json", bytes.NewReader(payload))
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusCreated {
+			return remoteResponseError(resp)
+		}
+		var body struct {
+			*session.StateFile
+			Alive      bool   `json:"alive"`
+			SocketPath string `json:"socket_path"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			return err
+		}
+		if body.StateFile == nil || body.Session.Key == "" {
+			return errors.New("remote run: response missing session key")
+		}
+		fmt.Fprintf(os.Stderr, "hoot: session %q started (remote=%s)\n", body.Session.Key, remote.display)
+		fmt.Println(body.Session.Key)
+		return nil
 	}
 
 	store := session.NewStore(*stateDir)
