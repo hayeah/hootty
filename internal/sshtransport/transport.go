@@ -134,13 +134,19 @@ func BuildPlan(cfg Config, id, remoteHome string) Plan {
 
 func TunnelArgs(cfg Config, plan Plan) []string {
 	args := baseArgs(cfg, plan.ControlPath)
+	remoteCommand := "sh -lc " + shellQuote(remoteServeScript(plan.RemoteSocket))
 	args = append(args,
 		"-o", "ExitOnForwardFailure=yes",
 		"-L", plan.LocalSocket+":"+plan.RemoteSocket,
 		plan.Target,
-		"exec hoot serve --bind "+shellQuote("unix:"+plan.RemoteSocket),
+		remoteCommand,
 	)
 	return args
+}
+
+func remoteServeScript(remoteSocket string) string {
+	return "hoot serve --bind " + shellQuote("unix:"+remoteSocket) +
+		" & pid=$!; trap 'kill \"$pid\" 2>/dev/null; wait \"$pid\" 2>/dev/null; exit' HUP INT TERM EXIT; wait \"$pid\""
 }
 
 func ControlPath(stateDir, user, host, port string) string {

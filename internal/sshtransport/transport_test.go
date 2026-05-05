@@ -50,7 +50,10 @@ func TestTunnelArgsShape(t *testing.T) {
 		"-p\n2222",
 		"-L\n" + plan.LocalSocket + ":" + plan.RemoteSocket,
 		"me@devbox",
-		"exec hoot serve --bind 'unix:/home/me/.hoot/.tunnels/012345.sock'",
+		"sh -lc",
+		"hoot serve --bind",
+		"unix:/home/me/.hoot/.tunnels/012345.sock",
+		"trap",
 	}
 	for _, want := range checks {
 		if !strings.Contains(joined, want) {
