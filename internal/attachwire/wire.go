@@ -8,8 +8,9 @@
 //	| u8 typ | u32 len  | payload |
 //	+--------+----------+---------+
 //
-// `len` is little-endian. Four message types: Hello (C→S),
-// Input (C→S), Output (S→C), Size (both directions).
+// `len` is little-endian. Message types: Hello (C→S), Input
+// (C→S), Output (S→C live bytes), Size (both directions), and
+// snapshot parts (S→C initial attach replay).
 //
 // See `docs/tasks/<slug>/spec.md` (or the design note at
 // supervise-attach-spec_claude.md) for the full protocol.
@@ -30,6 +31,9 @@ const (
 	MsgInput  byte = 0x01
 	MsgOutput byte = 0x02
 	MsgSize   byte = 0x03
+
+	MsgSnapshotScrollback byte = 0x04
+	MsgSnapshotScreen     byte = 0x05
 )
 
 // MaxPayload is a sanity cap on a single frame payload. The replay

@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -86,6 +87,34 @@ func TestLibghosttyPTYFormatters(t *testing.T) {
 	// Slave was kept open so the master's reads don't see EOF;
 	// close it here so the readLoop can exit on master.Close.
 	_ = slave.Close()
+}
+
+func TestLibghosttyPTYSnapshotPartsSplitScrollbackAndScreen(t *testing.T) {
+	p, slave, cleanup := newTestLibghosttyPTY(t, 20, 5)
+	defer cleanup()
+
+	var fixture strings.Builder
+	for i := 1; i <= 10; i++ {
+		fmt.Fprintf(&fixture, "line-%02d\r\n", i)
+	}
+	fixture.WriteString("\x1b[2;5H\x1b[1mCUR\x1b[0m")
+	writePTYAndWait(t, p, slave, []byte(fixture.String()), "CUR")
+
+	scrollback, screen, err := p.SnapshotParts()
+	if err != nil {
+		t.Fatalf("SnapshotParts: %v", err)
+	}
+	if !strings.Contains(string(scrollback), "line-01") || !strings.Contains(string(scrollback), "line-06") {
+		t.Fatalf("scrollback missing expected history rows: %q", scrollback)
+	}
+	if strings.Contains(string(scrollback), "line-07") || strings.Contains(string(scrollback), "CUR") {
+		t.Fatalf("scrollback contains visible screen rows: %q", scrollback)
+	}
+	for _, want := range []string{"line-07", "line-10", "CUR", "\x1b[2;8H"} {
+		if !strings.Contains(string(screen), want) {
+			t.Fatalf("screen missing %q: %q", want, screen)
+		}
+	}
 }
 
 // TestLibghosttyRecorderRoundtrip verifies that all bytes written
