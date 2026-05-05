@@ -81,6 +81,47 @@ func (s *serveState) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *serveState) handleResolve(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	query := r.PathValue("key")
+	if query == "" {
+		http.Error(w, "missing session key", http.StatusBadRequest)
+		return
+	}
+	state, err := s.store.Resolve(query)
+	if err != nil {
+		writeResolveError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"key": state.Session.Key})
+}
+
+func writeResolveError(w http.ResponseWriter, err error) {
+	var ambig *shortid.AmbiguousIDError
+	var notFound *shortid.IDNotFoundError
+	var tooShort *shortid.IDTooShortError
+	switch {
+	case errors.As(err, &ambig):
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":   "ambiguous prefix",
+			"query":   ambig.Query,
+			"matches": ambig.Matches,
+		})
+	case errors.As(err, &notFound):
+		http.Error(w, err.Error(), http.StatusNotFound)
+	case errors.As(err, &tooShort):
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	default:
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
 // attachMessage is the WS text-frame envelope. Today only
 // {type:"resize", cols, rows} is recognized. Unknown types are
 // silently ignored — forward-compatible for future {type:"ping"}
@@ -354,25 +395,7 @@ func (s *serveState) handleAttachRaw(w http.ResponseWriter, r *http.Request) {
 
 	state, err := s.store.Resolve(query)
 	if err != nil {
-		var ambig *shortid.AmbiguousIDError
-		var notFound *shortid.IDNotFoundError
-		var tooShort *shortid.IDTooShortError
-		switch {
-		case errors.As(err, &ambig):
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusConflict)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"error":   "ambiguous prefix",
-				"query":   ambig.Query,
-				"matches": ambig.Matches,
-			})
-		case errors.As(err, &notFound):
-			http.Error(w, err.Error(), http.StatusNotFound)
-		case errors.As(err, &tooShort):
-			http.Error(w, err.Error(), http.StatusBadRequest)
-		default:
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
+		writeResolveError(w, err)
 		return
 	}
 	sockPath := filepath.Join(s.stateDir, state.Session.Key, "rpc.sock")

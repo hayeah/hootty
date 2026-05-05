@@ -177,6 +177,155 @@ func TestHandleAttachRawAmbiguous(t *testing.T) {
 	}
 }
 
+func TestHandleResolve(t *testing.T) {
+	stateDir := shortTempDir(t)
+	for _, key := range []string{"abc111", "abc222", "vit999"} {
+		dir := filepath.Join(stateDir, key)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		sf := session.StateFile{Session: session.SessionState{Key: key}}
+		if err := writeJSON(filepath.Join(dir, "state.json"), sf); err != nil {
+			t.Fatalf("write state: %v", err)
+		}
+	}
+
+	srv := &serveState{store: session.NewStore(stateDir), stateDir: stateDir}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/sessions/{key}/resolve", srv.handleResolve)
+	httpSrv := httptest.NewServer(mux)
+	defer httpSrv.Close()
+
+	t.Run("exact", func(t *testing.T) {
+		resp, err := http.Get(httpSrv.URL + "/sessions/abc111/resolve")
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("status = %d %q, want 200", resp.StatusCode, body)
+		}
+		var body struct {
+			Key string `json:"key"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if body.Key != "abc111" {
+			t.Fatalf("key = %q, want abc111", body.Key)
+		}
+	})
+
+	t.Run("prefix", func(t *testing.T) {
+		resp, err := http.Get(httpSrv.URL + "/sessions/vit/resolve")
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("status = %d %q, want 200", resp.StatusCode, body)
+		}
+		var body struct {
+			Key string `json:"key"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if body.Key != "vit999" {
+			t.Fatalf("key = %q, want vit999", body.Key)
+		}
+	})
+
+	t.Run("ambiguous", func(t *testing.T) {
+		resp, err := http.Get(httpSrv.URL + "/sessions/abc/resolve")
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusConflict {
+			t.Fatalf("status = %d, want 409", resp.StatusCode)
+		}
+		var body struct {
+			Matches []string `json:"matches"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(body.Matches) != 2 {
+			t.Fatalf("matches = %v, want 2", body.Matches)
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		resp, err := http.Get(httpSrv.URL + "/sessions/zzz/resolve")
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", resp.StatusCode)
+		}
+	})
+}
+
+func TestListenServeBindUnixRoundTrip(t *testing.T) {
+	sockPath := filepath.Join(shortTempDir(t), "serve.sock")
+	ln, cleanup, isUnix, err := listenServeBind("unix:" + sockPath)
+	if err != nil {
+		t.Fatalf("listenServeBind: %v", err)
+	}
+	if !isUnix {
+		t.Fatalf("listenServeBind isUnix = false, want true")
+	}
+	defer cleanup()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	})
+	server := &http.Server{Handler: mux}
+	serveDone := make(chan error, 1)
+	go func() {
+		serveDone <- server.Serve(ln)
+	}()
+
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", sockPath)
+		},
+	}}
+	resp, err := client.Get("http://unix/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz over unix socket: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || string(body) != "ok" {
+		t.Fatalf("response = %d %q, want 200 ok", resp.StatusCode, body)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	select {
+	case err := <-serveDone:
+		if err != http.ErrServerClosed {
+			t.Fatalf("Serve err = %v, want ErrServerClosed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("server did not shut down")
+	}
+	cleanup()
+	if _, err := os.Stat(sockPath); !os.IsNotExist(err) {
+		t.Fatalf("socket still exists after cleanup: %v", err)
+	}
+}
+
 // runFakeSessionAttach pretends to be the session's
 // /attach handler on a unix socket. It accepts one connection,
 // performs the hoot-attach/1 upgrade, reads the Hello

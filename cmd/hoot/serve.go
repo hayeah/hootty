@@ -1,11 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/hayeah/hootty"
@@ -24,6 +30,7 @@ import (
 //	GET    /sessions                  list { sessions: [{...StateFile, alive}] }
 //	POST   /sessions                  spawn (body: {cmd?, argv?, key?})
 //	GET    /sessions/{key}            state.json (alias of /state)
+//	GET    /sessions/{key}/resolve    resolve full key or unique prefix
 //	DELETE /sessions/{key}            SIGTERM the session by pid
 //	GET    /sessions/{key}/state      state.json
 //	GET    /sessions/{key}/events     SSE proxy of upstream /events
@@ -32,14 +39,14 @@ import (
 //	GET    /healthz                   liveness
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	bind := fs.String("bind", "", `listen address in Go net.Listen form (e.g. "127.0.0.1:20000", ":20000", "[::1]:20000")`)
+	bind := fs.String("bind", "", `listen address (e.g. "127.0.0.1:20000", ":20000", "[::1]:20000", "unix:/path/to/serve.sock")`)
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
 	prefix := fs.String("prefix", "", `optional path prefix (e.g. "/api"); routes are mounted at both bare and prefixed paths`)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *bind == "" {
-		return fmt.Errorf("--bind is required (e.g. --bind 127.0.0.1:20000)")
+		return fmt.Errorf("--bind is required (e.g. --bind 127.0.0.1:20000 or unix:/path/to/serve.sock)")
 	}
 	if err := os.MkdirAll(*stateDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir state-dir: %w", err)
@@ -51,14 +58,83 @@ func cmdServe(args []string) error {
 	mux := http.NewServeMux()
 	register(mux, *prefix, "/sessions", srv.handleSessions)
 	register(mux, *prefix, "/sessions/{key}", srv.handleSession)
+	register(mux, *prefix, "/sessions/{key}/resolve", srv.handleResolve)
 	register(mux, *prefix, "/sessions/{key}/state", srv.handleState)
 	register(mux, *prefix, "/sessions/{key}/events", srv.handleEvents)
 	register(mux, *prefix, "/sessions/{key}/attach", srv.handleAttach)
 	register(mux, *prefix, "/sessions/{key}/attach-raw", srv.handleAttachRaw)
 	register(mux, *prefix, "/healthz", srv.handleHealth)
 
-	fmt.Fprintf(os.Stderr, "hoot serve: listening on http://%s (state-dir=%s)\n", *bind, *stateDir)
-	return http.ListenAndServe(*bind, mux)
+	ln, cleanup, isUnix, err := listenServeBind(*bind)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	server := &http.Server{Handler: mux}
+	var stopSignals func()
+	if isUnix {
+		stopSignals = watchShutdownSignals(server)
+		fmt.Fprintf(os.Stderr, "hoot serve: listening on unix:%s (state-dir=%s)\n", strings.TrimPrefix(*bind, "unix:"), *stateDir)
+	} else {
+		stopSignals = func() {}
+		fmt.Fprintf(os.Stderr, "hoot serve: listening on http://%s (state-dir=%s)\n", *bind, *stateDir)
+	}
+	defer stopSignals()
+	err = server.Serve(ln)
+	if err == http.ErrServerClosed {
+		return nil
+	}
+	return err
+}
+
+func listenServeBind(bind string) (net.Listener, func(), bool, error) {
+	if !strings.HasPrefix(bind, "unix:") {
+		ln, err := net.Listen("tcp", bind)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		return ln, func() { _ = ln.Close() }, false, nil
+	}
+
+	sockPath := strings.TrimPrefix(bind, "unix:")
+	if sockPath == "" {
+		return nil, nil, true, fmt.Errorf("--bind unix: requires a socket path")
+	}
+	if err := os.MkdirAll(filepath.Dir(sockPath), 0o700); err != nil {
+		return nil, nil, true, fmt.Errorf("mkdir socket dir: %w", err)
+	}
+	if err := os.Remove(sockPath); err != nil && !os.IsNotExist(err) {
+		return nil, nil, true, fmt.Errorf("remove stale socket: %w", err)
+	}
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		return nil, nil, true, err
+	}
+	cleanup := func() {
+		_ = ln.Close()
+		_ = os.Remove(sockPath)
+	}
+	return ln, cleanup, true, nil
+}
+
+func watchShutdownSignals(server *http.Server) func() {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-sigCh:
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_ = server.Shutdown(ctx)
+		case <-done:
+		}
+	}()
+	return func() {
+		signal.Stop(sigCh)
+		close(done)
+	}
 }
 
 // register mounts a handler at the bare path and (if prefix is

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/hayeah/hootty"
 	"github.com/hayeah/hootty/internal/attachetest"
+	"github.com/hayeah/hootty/internal/attachwire"
 )
 
 func TestAttachGoldenSnapshots(t *testing.T) {
@@ -193,6 +195,48 @@ func isClosedConn(err error) bool {
 	return strings.Contains(err.Error(), "use of closed network connection") ||
 		strings.Contains(err.Error(), "closed pipe") ||
 		err == net.ErrClosed
+}
+
+func TestRunSessionHeartbeatClosesIdleConnection(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		r := bufio.NewReader(serverConn)
+		for {
+			typ, _, err := attachwire.ReadFrame(r)
+			if err != nil {
+				return
+			}
+			if typ != attachwire.MsgHello && typ != attachwire.MsgPing {
+				t.Errorf("server saw frame type 0x%02x, want Hello or Ping", typ)
+				return
+			}
+		}
+	}()
+
+	ctx := context.Background()
+	shared := &sharedSession{wake: make(chan struct{}, 1)}
+	var attached atomic.Bool
+	start := time.Now()
+	err := runSession(ctx, clientConn, 80, 24, shared, attachLabel{Session: "idle", Host: "test"}, &attached, attachWriters{
+		stdout: io.Discard,
+		stderr: io.Discard,
+	}, attachPlaybackConfig{})
+	if err == nil {
+		t.Fatalf("runSession err = nil, want idle connection error")
+	}
+	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
+		t.Fatalf("idle heartbeat elapsed = %v, want <= 1.5s", elapsed)
+	}
+	select {
+	case <-serverDone:
+	case <-time.After(time.Second):
+		t.Fatalf("server reader did not observe client close")
+	}
 }
 
 func substantialScrollbackFixture() []byte {
