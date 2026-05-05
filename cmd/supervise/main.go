@@ -1,6 +1,6 @@
 // Command supervise is a small reference consumer of the supervisor
 // library: it spawns a single process on a libghostty-backed PTY,
-// tees raw output to <dir>/<key>/pty.log, and serves the supervisor
+// records output to <dir>/<key>/pty.cast, and serves the supervisor
 // mux on <dir>/<key>/rpc.sock.
 //
 // Subcommands:
@@ -58,11 +58,12 @@ Usage:
   supervise list    [--state-dir <d>]
   supervise resolve [--state-dir <d>] <id-or-prefix>
   supervise attach  [--host <addr>] [--state-dir <d>] [--no-reconnect]
+                    [--no-ascii-cinema-playback]
                     [--prefix-key <key>] <id-or-prefix>
   supervise serve   [--state-dir <d>] --bind <host:port> [--prefix /api]
 
 The session state directory is <state-dir>/<key>/. The supervisor
-serves rpc.sock and writes pty.log inside it. --state-dir defaults
+serves rpc.sock and writes pty.cast inside it. --state-dir defaults
 to ~/.supervise. If --key is omitted, a random short id (3-8 chars
 from 0-9a-z minus l/o) is generated.
 

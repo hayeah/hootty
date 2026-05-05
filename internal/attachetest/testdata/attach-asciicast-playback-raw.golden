@@ -1,0 +1,5 @@
+
+[connected. playback @ local]
+<ESC>[H<ESC>[2Jscreen-now<ESC>[0m<ESC>[1;11Hplayback-a
+playback-b
+<ESC>[H<ESC>[2Jscreen-now
