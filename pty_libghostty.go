@@ -40,6 +40,11 @@ import (
 type LibghosttyPTY struct {
 	master *os.File
 	term   *libghostty.Terminal
+	// primaryTerm mirrors only the primary screen. It receives the
+	// child's output after alternate-screen mode switches and
+	// alternate-screen content are stripped.
+	primaryTerm   *libghostty.Terminal
+	primaryFilter vtPrimaryScreenFilter
 
 	mu   sync.RWMutex
 	cols uint16
@@ -131,6 +136,16 @@ func NewLibghosttyPTY(master *os.File, cols, rows uint16, opts ...LibghosttyOpti
 	}
 	p.term = term
 
+	primaryTerm, err := libghostty.NewTerminal(
+		libghostty.WithSize(cols, rows),
+		libghostty.WithMaxScrollback(o.scrollback),
+	)
+	if err != nil {
+		term.Close()
+		return nil, fmt.Errorf("new primary terminal: %w", err)
+	}
+	p.primaryTerm = primaryTerm
+
 	go p.dispatch()
 	go p.readLoop()
 	return p, nil
@@ -152,6 +167,10 @@ func (p *LibghosttyPTY) Close() error {
 			if p.term != nil {
 				p.term.Close()
 				p.term = nil
+			}
+			if p.primaryTerm != nil {
+				p.primaryTerm.Close()
+				p.primaryTerm = nil
 			}
 			if p.rec != nil {
 				_ = p.rec.Close()
@@ -223,6 +242,12 @@ func (p *LibghosttyPTY) readLoop() {
 				}
 				if p.term != nil {
 					p.term.VTWrite(chunk)
+				}
+				if p.primaryTerm != nil {
+					primaryChunk := p.primaryFilter.Filter(chunk)
+					if len(primaryChunk) > 0 {
+						p.primaryTerm.VTWrite(primaryChunk)
+					}
 				}
 				// Per-subscriber strip pass: filter out terminal-
 				// query escape sequences (DA/DSR/CPR/XTVERSION/...)
@@ -346,7 +371,13 @@ func (p *LibghosttyPTY) Resize(cols, rows uint16) error {
 		}
 		// cellWidthPx/cellHeightPx are only used by Kitty graphics;
 		// 0 is fine for headless setups.
-		termErr = p.term.Resize(cols, rows, 0, 0)
+		if err := p.term.Resize(cols, rows, 0, 0); err != nil {
+			termErr = err
+			return
+		}
+		if p.primaryTerm != nil {
+			termErr = p.primaryTerm.Resize(cols, rows, 0, 0)
+		}
 	})
 	if termErr != nil {
 		return fmt.Errorf("term resize: %w", termErr)
@@ -383,25 +414,46 @@ func (p *LibghosttyPTY) Snapshot() ([]byte, error) {
 	var out []byte
 	var ferr error
 	p.do(func() {
-		if p.term == nil {
-			ferr = errors.New("pty closed")
-			return
-		}
-		f, err := libghostty.NewFormatter(p.term,
-			libghostty.WithFormatterFormat(libghostty.FormatterFormatVT),
-			libghostty.WithFormatterTrim(true),
-			libghostty.WithFormatterExtraCursor(true),
-			libghostty.WithFormatterExtraStyle(true),
-			libghostty.WithFormatterExtraModes(true),
-		)
-		if err != nil {
-			ferr = err
-			return
-		}
-		defer f.Close()
-		out, ferr = f.Format()
+		out, ferr = p.snapshotLocked()
 	})
 	return out, ferr
+}
+
+func (p *LibghosttyPTY) snapshotLocked() ([]byte, error) {
+	if p.term == nil {
+		return nil, errors.New("pty closed")
+	}
+	active, err := p.term.ActiveScreen()
+	if err != nil {
+		return nil, err
+	}
+	if active != libghostty.ScreenAlternate || p.primaryTerm == nil {
+		return formatTerminalSnapshot(p.term)
+	}
+	primary, err := formatTerminalSnapshot(p.primaryTerm)
+	if err != nil {
+		return nil, err
+	}
+	alt, err := formatTerminalSnapshot(p.term)
+	if err != nil {
+		return nil, err
+	}
+	return append(primary, alt...), nil
+}
+
+func formatTerminalSnapshot(term *libghostty.Terminal) ([]byte, error) {
+	f, err := libghostty.NewFormatter(term,
+		libghostty.WithFormatterFormat(libghostty.FormatterFormatVT),
+		libghostty.WithFormatterTrim(true),
+		libghostty.WithFormatterExtraCursor(true),
+		libghostty.WithFormatterExtraStyle(true),
+		libghostty.WithFormatterExtraModes(true),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return f.Format()
 }
 
 // subscribe registers a channel to receive live PTY bytes. Returns
@@ -454,6 +506,47 @@ func (p *LibghosttyPTY) SubscribeAtRecord() (<-chan []byte, int64, func()) {
 		})
 	}
 	return ch, offset, cancel
+}
+
+// SubscribeWithSnapshot registers a live subscriber and captures a
+// snapshot in one dispatcher action. The returned snapshot reflects
+// all PTY bytes processed before the subscription was installed; live
+// chunks delivered on the channel are strictly after that snapshot.
+func (p *LibghosttyPTY) SubscribeWithSnapshot() (<-chan []byte, []byte, func(), error) {
+	ch := make(chan []byte, 256)
+	sub := &subscriber{ch: ch}
+	var snap []byte
+	var snapErr error
+	ran := false
+	p.do(func() {
+		ran = true
+		if p.term == nil {
+			snapErr = errors.New("pty closed")
+			return
+		}
+		p.subs[ch] = sub
+		snap, snapErr = p.snapshotLocked()
+		if snapErr != nil {
+			delete(p.subs, ch)
+			close(ch)
+		}
+	})
+	if !ran {
+		close(ch)
+		return nil, nil, nil, errors.New("pty closed")
+	}
+	if snapErr != nil {
+		return nil, nil, nil, snapErr
+	}
+	cancel := func() {
+		p.do(func() {
+			if _, ok := p.subs[ch]; ok {
+				delete(p.subs, ch)
+				close(ch)
+			}
+		})
+	}
+	return ch, snap, cancel, nil
 }
 
 // Recorder returns the recorder configured on this PTY (may be nil).
