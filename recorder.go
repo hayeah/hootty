@@ -18,7 +18,6 @@ type Recorder struct {
 	mu   sync.Mutex
 	path string
 	w    io.WriteCloser
-	n    int64
 }
 
 // NewRecorder opens (or creates+truncates) the file at path for the
@@ -39,21 +38,7 @@ func (r *Recorder) Write(data []byte) (int, error) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	n, err := r.w.Write(data)
-	r.n += int64(n)
-	return n, err
-}
-
-// Size returns the number of bytes written so far. Used by the
-// attach handler to checkpoint pty.log replay against the live
-// subscriber feed.
-func (r *Recorder) Size() int64 {
-	if r == nil {
-		return 0
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.n
+	return r.w.Write(data)
 }
 
 // Path returns the on-disk path of the recording.

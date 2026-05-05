@@ -35,7 +35,7 @@ func TestSubscriberFanoutStripsQueries(t *testing.T) {
 	defer p.Close()
 
 	// Subscribe BEFORE writing so we observe everything.
-	ch, _, cancel := p.SubscribeAtRecord()
+	ch, cancel := p.SubscribeAtRecord()
 	defer cancel()
 
 	// Realistic-ish burst:

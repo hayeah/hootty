@@ -540,27 +540,13 @@ func (p *LibghosttyPTY) subscribe() (<-chan []byte, func()) {
 	return ch, cancel
 }
 
-// SubscribeAtRecord registers a live subscriber and atomically
-// captures the recorder's current byte offset, so a caller can read
-// the on-disk pty.log up to `offset` and then drain the channel for
-// bytes written after that point — without any gap or duplication.
-//
-// Both the subscribe and the offset capture happen inside the
-// dispatcher goroutine, which is also the goroutine that writes to
-// the recorder and fans out to subscribers. That makes the pair
-// atomic with respect to live PTY chunks.
-//
-// If no recorder is configured the offset is zero. Cancel removes
-// the subscription and closes the channel.
-func (p *LibghosttyPTY) SubscribeAtRecord() (<-chan []byte, int64, func()) {
+// SubscribeAtRecord registers a live subscriber on the dispatcher
+// goroutine. Cancel removes the subscription and closes the channel.
+func (p *LibghosttyPTY) SubscribeAtRecord() (<-chan []byte, func()) {
 	ch := make(chan []byte, 256)
 	sub := &subscriber{ch: ch}
-	var offset int64
 	p.do(func() {
 		p.subs[ch] = sub
-		if p.rec != nil {
-			offset = p.rec.Size()
-		}
 	})
 	cancel := func() {
 		p.do(func() {
@@ -570,7 +556,7 @@ func (p *LibghosttyPTY) SubscribeAtRecord() (<-chan []byte, int64, func()) {
 			}
 		})
 	}
-	return ch, offset, cancel
+	return ch, cancel
 }
 
 // SubscribeWithSnapshot registers a live subscriber and captures a

@@ -92,11 +92,10 @@ func (h *attachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 //   - reads Hello
 //   - registers in AttachSet (which may resize the PTY + broadcast)
 //   - sends Size{effective} to the new attach
-//   - subscribes to live PTY chunks atomically with reading the
-//     recorder offset
-//   - replays pty.log (full mode) or a libghostty snapshot
-//     (snapshot mode), then drains the buffered post-offset chunks,
-//     then enters live mode
+//   - subscribes to live PTY chunks atomically with reading a
+//     libghostty snapshot
+//   - sends the snapshot, drains buffered post-snapshot chunks, then
+//     enters live mode
 //   - in parallel, reads framed messages from the client (Input,
 //     Size) and forwards/handles them
 //
