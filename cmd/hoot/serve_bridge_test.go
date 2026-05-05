@@ -177,6 +177,62 @@ func TestHandleAttachRawAmbiguous(t *testing.T) {
 	}
 }
 
+func TestListenServeBindUnixRoundTrip(t *testing.T) {
+	sockPath := filepath.Join(shortTempDir(t), "serve.sock")
+	ln, cleanup, isUnix, err := listenServeBind("unix:" + sockPath)
+	if err != nil {
+		t.Fatalf("listenServeBind: %v", err)
+	}
+	if !isUnix {
+		t.Fatalf("listenServeBind isUnix = false, want true")
+	}
+	defer cleanup()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	})
+	server := &http.Server{Handler: mux}
+	serveDone := make(chan error, 1)
+	go func() {
+		serveDone <- server.Serve(ln)
+	}()
+
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", sockPath)
+		},
+	}}
+	resp, err := client.Get("http://unix/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz over unix socket: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || string(body) != "ok" {
+		t.Fatalf("response = %d %q, want 200 ok", resp.StatusCode, body)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	select {
+	case err := <-serveDone:
+		if err != http.ErrServerClosed {
+			t.Fatalf("Serve err = %v, want ErrServerClosed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("server did not shut down")
+	}
+	cleanup()
+	if _, err := os.Stat(sockPath); !os.IsNotExist(err) {
+		t.Fatalf("socket still exists after cleanup: %v", err)
+	}
+}
+
 // runFakeSessionAttach pretends to be the session's
 // /attach handler on a unix socket. It accepts one connection,
 // performs the hoot-attach/1 upgrade, reads the Hello
