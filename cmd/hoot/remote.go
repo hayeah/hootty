@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -182,4 +183,13 @@ func dialAttachRaw(r *Remote, key string) dialFn {
 		}
 		return conn, nil
 	}
+}
+
+func remoteResponseError(resp *http.Response) error {
+	body, _ := io.ReadAll(resp.Body)
+	msg := strings.TrimSpace(string(body))
+	if msg == "" {
+		msg = resp.Status
+	}
+	return fmt.Errorf("remote: %s: %s", resp.Status, msg)
 }
