@@ -9,6 +9,9 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
+
+	"github.com/hayeah/hootty/internal/sshtransport"
 )
 
 type remoteKind string
@@ -108,14 +111,54 @@ func newSSHRemote(u *url.URL, stateDir string) *Remote {
 	if cfg.Port != "" {
 		display += ":" + cfg.Port
 	}
+	var mu sync.Mutex
+	var tunnel *sshtransport.Tunnel
+	openTunnel := func(ctx context.Context) (*sshtransport.Tunnel, error) {
+		return sshtransport.Open(ctx, sshtransport.Config{
+			User:     cfg.User,
+			Host:     cfg.Host,
+			Port:     cfg.Port,
+			StateDir: cfg.StateDir,
+		})
+	}
+
 	return &Remote{
 		kind:    remoteKindSSH,
 		display: display,
 		ssh:     cfg,
-		Dial: func(context.Context) (net.Conn, error) {
-			return nil, fmt.Errorf("ssh remote transport not wired yet")
+		Dial: func(ctx context.Context) (net.Conn, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if tunnel == nil {
+				t, err := openTunnel(ctx)
+				if err != nil {
+					return nil, err
+				}
+				tunnel = t
+			}
+			conn, err := dialUnixSock(ctx, tunnel.LocalSocket())
+			if err == nil {
+				return conn, nil
+			}
+			_ = tunnel.Close()
+			tunnel = nil
+			t, openErr := openTunnel(ctx)
+			if openErr != nil {
+				return nil, fmt.Errorf("reopen ssh tunnel after local socket error %v: %w", err, openErr)
+			}
+			tunnel = t
+			return dialUnixSock(ctx, tunnel.LocalSocket())
 		},
-		Close: func() error { return nil },
+		Close: func() error {
+			mu.Lock()
+			defer mu.Unlock()
+			if tunnel == nil {
+				return nil
+			}
+			err := tunnel.Close()
+			tunnel = nil
+			return err
+		},
 	}
 }
 

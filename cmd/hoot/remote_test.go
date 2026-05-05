@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"testing"
+	"time"
 )
 
 func TestParseRemoteFlag(t *testing.T) {
@@ -75,5 +79,49 @@ func TestHTTPClientDialsRemoteAddress(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestSSHRemoteLocalhostHealthz(t *testing.T) {
+	if err := exec.Command("ssh", "-o", "BatchMode=yes", "localhost", "true").Run(); err != nil {
+		t.Skipf("passwordless ssh localhost unavailable: %v", err)
+	}
+	if err := exec.Command("ssh", "-o", "BatchMode=yes", "localhost", "command -v hoot").Run(); err != nil {
+		t.Skipf("hoot is not in localhost ssh PATH: %v", err)
+	}
+
+	stateDir, err := os.MkdirTemp("/tmp", "hoot-sshremote")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stateDir) })
+	r, err := parseRemoteFlag("ssh://localhost", stateDir)
+	if err != nil {
+		t.Fatalf("parseRemoteFlag: %v", err)
+	}
+	defer r.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://hoot/healthz", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := httpClient(r).Do(req)
+	if err != nil {
+		t.Fatalf("GET /healthz via ssh remote: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var body struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !body.OK {
+		t.Fatalf("health body = %+v, want ok", body)
 	}
 }
