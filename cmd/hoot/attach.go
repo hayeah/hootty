@@ -93,24 +93,16 @@ retries forever. Press any key to wake the backoff and retry now.
 		return 2
 	}
 
-	prefixByte, err := attachwire.ParsePrefixKey(*prefixSpec)
+	attachOpts, err := attachOptionsFromFlags(
+		*prefixSpec,
+		*noReconnect,
+		*noAsciiCinemaPlayback,
+		*asciiCinemaPlaybackWindow,
+		*asciiCinemaPlaybackSpeed,
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hoot attach: %v\n", err)
 		return 2
-	}
-	if *asciiCinemaPlaybackWindow < 0 {
-		fmt.Fprintln(os.Stderr, "hoot attach: --ascii-cinema-playback-window must be >= 0")
-		return 2
-	}
-	if *asciiCinemaPlaybackSpeed <= 0 {
-		fmt.Fprintln(os.Stderr, "hoot attach: --ascii-cinema-playback-speed must be > 0")
-		return 2
-	}
-
-	playback := attachPlaybackConfig{
-		Enabled: !*noAsciiCinemaPlayback,
-		Window:  *asciiCinemaPlaybackWindow,
-		Speed:   *asciiCinemaPlaybackSpeed,
 	}
 
 	var dial dialFn
@@ -124,7 +116,7 @@ retries forever. Press any key to wake the backoff and retry now.
 	if remote != nil {
 		defer remote.Close()
 		dial = dialAttachRaw(remote, rest[0])
-		reconnect = !*noReconnect
+		reconnect = !attachOpts.NoReconnect
 		label = attachLabel{Session: rest[0], Host: remote.display}
 	} else {
 		store := session.NewStore(*stateDir)
@@ -138,7 +130,7 @@ retries forever. Press any key to wake the backoff and retry now.
 		label = attachLabel{Session: state.Session.Key, Host: "local"}
 	}
 
-	exitCode, err := runAttachLoop(dial, prefixByte, reconnect, label, playback)
+	exitCode, err := runAttachLoop(dial, attachOpts.PrefixByte, reconnect, label, attachOpts.Playback)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hoot attach: %v\n", err)
 	}
@@ -164,6 +156,34 @@ type attachPlaybackConfig struct {
 	Enabled bool
 	Window  time.Duration
 	Speed   float64
+}
+
+type attachOptions struct {
+	PrefixByte  byte
+	NoReconnect bool
+	Playback    attachPlaybackConfig
+}
+
+func attachOptionsFromFlags(prefixSpec string, noReconnect, noAsciiCinemaPlayback bool, asciiCinemaPlaybackWindow time.Duration, asciiCinemaPlaybackSpeed float64) (attachOptions, error) {
+	prefixByte, err := attachwire.ParsePrefixKey(prefixSpec)
+	if err != nil {
+		return attachOptions{}, err
+	}
+	if asciiCinemaPlaybackWindow < 0 {
+		return attachOptions{}, errors.New("--ascii-cinema-playback-window must be >= 0")
+	}
+	if asciiCinemaPlaybackSpeed <= 0 {
+		return attachOptions{}, errors.New("--ascii-cinema-playback-speed must be > 0")
+	}
+	return attachOptions{
+		PrefixByte:  prefixByte,
+		NoReconnect: noReconnect,
+		Playback: attachPlaybackConfig{
+			Enabled: !noAsciiCinemaPlayback,
+			Window:  asciiCinemaPlaybackWindow,
+			Speed:   asciiCinemaPlaybackSpeed,
+		},
+	}, nil
 }
 
 const (

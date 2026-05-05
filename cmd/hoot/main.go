@@ -10,6 +10,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 )
@@ -45,16 +46,37 @@ func main() {
 		os.Exit(2)
 	}
 	if err != nil {
+		var ee *exitError
+		if errors.As(err, &ee) {
+			if ee.err != nil {
+				fmt.Fprintf(os.Stderr, "hoot %s: %v\n", cmd, ee.err)
+			}
+			os.Exit(ee.code)
+		}
 		fmt.Fprintf(os.Stderr, "hoot %s: %v\n", cmd, err)
 		os.Exit(1)
 	}
+}
+
+type exitError struct {
+	code int
+	err  error
+}
+
+func (e *exitError) Error() string {
+	if e.err != nil {
+		return e.err.Error()
+	}
+	return fmt.Sprintf("exit %d", e.code)
 }
 
 func usage() {
 	fmt.Fprint(os.Stderr, `hoot — reference CLI for the session library
 
 Usage:
-  hoot run     [--remote <url>] [--state-dir <d>] [--key <k>] -- <cmd> [args...]
+  hoot run     [--remote <url>] [--state-dir <d>] [--key <k>] [--attach]
+                    [--no-reconnect] [--no-ascii-cinema-playback]
+                    [--prefix-key <key>] -- <cmd> [args...]
   hoot list    [--remote <url>] [--state-dir <d>]
   hoot resolve [--remote <url>] [--state-dir <d>] <id-or-prefix>
   hoot attach  [--remote <url>] [--state-dir <d>] [--no-reconnect]
