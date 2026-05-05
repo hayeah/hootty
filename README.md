@@ -120,12 +120,19 @@ PTY winsize is negotiated as `min(cols)`, `min(rows)` across all
 connected attaches; the negotiated size is broadcast back to every
 attach as a `Size` frame whenever it changes.
 
-Initial replay: a libghostty-formatted snapshot of the active screen
-(viewport + scrollback up to `max_scrollback`, plus cursor position,
-active SGR style, and non-default modes) is sent as the first frame,
-then the connection switches to live. The snapshot subscribe pair is
-race-free — both happen on the dispatcher goroutine, so live chunks
-delivered after subscribe carry no overlap with the snapshot.
+Initial replay: a libghostty-formatted VT snapshot is sent as the
+first output frame, then the connection switches to live. On the
+primary screen this is the active screen's viewport + scrollback up to
+`max_scrollback`, plus cursor position, active SGR style, and
+non-default modes. If the child is currently on an alternate screen
+(tmux, vim, less, etc.), the snapshot is ordered as primary scrollback
+first, then alternate-screen entry and the active alternate contents.
+That builds both screen buffers in the attaching terminal, so the
+later live alternate-screen exit restores the recorded primary
+scrollback rather than the attach client's previously empty local
+primary. The snapshot subscribe pair is race-free — both happen on the
+dispatcher goroutine, so live chunks delivered after subscribe carry
+no overlap with the snapshot.
 
 The previous `--no-full-replay` flag and the alternative `pty.log`
 replay arm were removed. Replaying raw `pty.log` re-issued every

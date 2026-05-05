@@ -172,25 +172,26 @@ func (h *attachHandler) serveOne(conn io.ReadWriteCloser, bufrw *bufio.ReadWrite
 		send(attachwire.MsgSize, payload)
 	}
 
-	// Subscribe to live atomically with snapshotting the screen.
-	// Both happen on the dispatcher goroutine, so the snapshot we
-	// send and the live chunks the subscriber sees are causally
-	// ordered with no gap or duplication: the snapshot reflects the
-	// emulator's state up to (but not including) any live chunk that
-	// arrives on the channel.
-	liveCh, _, cancelSub := h.pty.SubscribeAtRecord()
-	defer cancelSub()
-
-	// Initial replay: a libghostty snapshot of the active screen
-	// (includes scrollback up to max_scrollback). Snapshot is the
-	// only replay mode — full pty.log replay was removed because it
-	// re-issues every terminal query the child ever sent, which the
-	// real terminal would dutifully answer back into the child's
-	// stdin. See spec.md / docs/tasks/<slug>/spec.md.
-	snap, err := h.pty.Snapshot()
+	// Subscribe to live atomically with snapshotting the screen. Both
+	// happen on the dispatcher goroutine, so the snapshot we send and
+	// the live chunks the subscriber sees are causally ordered with no
+	// gap or duplication: the snapshot reflects the emulator's state up
+	// to (but not including) any live chunk that arrives on the channel.
+	liveCh, snap, cancelSub, err := h.pty.SubscribeWithSnapshot()
 	if err != nil {
 		return fmt.Errorf("snapshot: %w", err)
 	}
+	defer cancelSub()
+
+	// Initial replay: a libghostty VT snapshot. If the child is on the
+	// alternate screen, Snapshot prefixes the primary mirror's scrollback
+	// before entering alt and painting the active alt screen, so a later
+	// live alt-screen exit restores the correct primary scrollback.
+	//
+	// Snapshot is the only replay mode — full pty.log replay was removed
+	// because it re-issues every terminal query the child ever sent,
+	// which the real terminal would dutifully answer back into the
+	// child's stdin. See spec.md / docs/tasks/<slug>/spec.md.
 	if len(snap) > 0 {
 		send(attachwire.MsgOutput, snap)
 	}
