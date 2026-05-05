@@ -87,8 +87,8 @@ func WithLibghosttyScrollback(lines uint) LibghosttyOption {
 	return func(o *libghosttyOptions) { o.scrollback = lines }
 }
 
-// WithRecorder attaches a raw-byte tee. Every chunk the dispatcher
-// receives is also written to the recorder before fanout.
+// WithRecorder attaches an output recorder. Every chunk the
+// dispatcher receives is also written to the recorder before fanout.
 func WithRecorder(rec *Recorder) LibghosttyOption {
 	return func(o *libghosttyOptions) { o.rec = rec }
 }
@@ -377,7 +377,13 @@ func (p *LibghosttyPTY) Resize(cols, rows uint16) error {
 			return
 		}
 		if p.primaryTerm != nil {
-			termErr = p.primaryTerm.Resize(cols, rows, 0, 0)
+			if err := p.primaryTerm.Resize(cols, rows, 0, 0); err != nil {
+				termErr = err
+				return
+			}
+		}
+		if p.rec != nil {
+			_ = p.rec.RecordResize(cols, rows)
 		}
 	})
 	if termErr != nil {

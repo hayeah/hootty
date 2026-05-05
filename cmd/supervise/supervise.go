@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/creack/pty"
 
@@ -73,7 +74,10 @@ func cmdSupervise(args []string) error {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 
-	rec, err := supervisor.NewRecorder(filepath.Join(dir, "pty.log"))
+	rec, err := supervisor.NewRecorder(filepath.Join(dir, "pty.cast"), cols, rows,
+		supervisor.WithRecorderCommand(strings.Join(rest, " ")),
+		supervisor.WithRecorderTitle(*key),
+	)
 	if err != nil {
 		return fmt.Errorf("recorder: %w", err)
 	}

@@ -2,7 +2,6 @@ package supervisor
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -127,8 +126,8 @@ func TestLibghosttyRecorderRoundtrip(t *testing.T) {
 	defer master.Close()
 
 	tmp := t.TempDir()
-	logPath := tmp + "/pty.log"
-	rec, err := NewRecorder(logPath)
+	logPath := tmp + "/pty.cast"
+	rec, err := NewRecorder(logPath, 80, 24)
 	if err != nil {
 		t.Fatalf("NewRecorder: %v", err)
 	}
@@ -159,13 +158,17 @@ func TestLibghosttyRecorderRoundtrip(t *testing.T) {
 	}
 	_ = p.Close() // flushes recorder
 
-	got, err := os.ReadFile(logPath)
+	events, err := ReadAsciicastOutputEvents(logPath, 0)
 	if err != nil {
-		t.Fatalf("read log: %v", err)
+		t.Fatalf("read cast: %v", err)
+	}
+	var got strings.Builder
+	for _, ev := range events {
+		got.Write(ev.Data)
 	}
 	for _, want := range []string{"abc", "\x1b[31m", "red", "\x1b[0m"} {
-		if !strings.Contains(string(got), want) {
-			t.Errorf("recorder roundtrip: missing %q in log %q", want, string(got))
+		if !strings.Contains(got.String(), want) {
+			t.Errorf("recorder roundtrip: missing %q in cast %q", want, got.String())
 		}
 	}
 
