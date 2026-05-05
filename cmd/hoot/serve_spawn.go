@@ -32,8 +32,8 @@ type createSessionReq struct {
 	Key  string   `json:"key,omitempty"`
 }
 
-// createSession is POST /sessions. It forks `hoot __hoot`
-// directly from this process so the child hootty is our
+// createSession is POST /sessions. It forks `hoot __session`
+// directly from this process so the child session is our
 // grandchild and the response can wait until rpc.sock appears
 // (3s) — at which point the webui's optimistic row can be
 // replaced with real data.
@@ -75,7 +75,7 @@ func (s *serveState) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sockPath, err := spawnHoot(s.stateDir, key, argv)
+	sockPath, err := spawnSession(s.stateDir, key, argv)
 	if err != nil {
 		http.Error(w, "spawn: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -88,7 +88,7 @@ func (s *serveState) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type resp struct {
-		*hootty.StateFile
+		*session.StateFile
 		Alive      bool   `json:"alive"`
 		SocketPath string `json:"socket_path"`
 	}
@@ -102,7 +102,7 @@ func (s *serveState) createSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // closeSession is DELETE /sessions/{key}. Sends SIGTERM to the
-// hootty's pid; the library handles the rest (drain children,
+// session's pid; the library handles the rest (drain children,
 // release flock, exit cleanly). Returns 204 once the signal is
 // delivered (or already gone).
 func (s *serveState) closeSession(w http.ResponseWriter, r *http.Request) {
@@ -116,11 +116,11 @@ func (s *serveState) closeSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	if st.Hootty.PID == 0 {
-		http.Error(w, "state.json has no hootty pid", http.StatusConflict)
+	if st.Session.PID == 0 {
+		http.Error(w, "state.json has no session pid", http.StatusConflict)
 		return
 	}
-	proc, err := os.FindProcess(st.Hootty.PID)
+	proc, err := os.FindProcess(st.Session.PID)
 	if err != nil {
 		http.Error(w, "find process: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -135,11 +135,11 @@ func (s *serveState) closeSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// spawnHoot forks `hoot __hoot --state-dir <d>
+// spawnSession forks `hoot __session --state-dir <d>
 // --key <k> -- <argv...>` as a detached grandchild, mirroring
 // cmdRun (run.go) but without the foreground attach. Returns the
 // rpc.sock path once it appears.
-func spawnHoot(stateDir, key string, argv []string) (string, error) {
+func spawnSession(stateDir, key string, argv []string) (string, error) {
 	master, slave, err := pty.Open()
 	if err != nil {
 		return "", fmt.Errorf("pty.Open: %w", err)
@@ -157,7 +157,7 @@ func spawnHoot(stateDir, key string, argv []string) (string, error) {
 		return "", fmt.Errorf("os.Executable: %w", err)
 	}
 	hootArgs := []string{
-		"__hoot",
+		"__session",
 		"--state-dir", stateDir,
 		"--key", key,
 		"--",
@@ -169,7 +169,7 @@ func spawnHoot(stateDir, key string, argv []string) (string, error) {
 	cmd.Stdout = slave
 	cmd.Stderr = slave
 	cmd.ExtraFiles = []*os.File{master}
-	// Setsid: hootty in its own session. See run.go for why.
+	// Setsid: session in its own session. See run.go for why.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("fork hoot: %w", err)

@@ -10,9 +10,9 @@ import (
 )
 
 // cmdList emits one JSON object per line — each line is a
-// hootty.StateFile serialized as-is. No bespoke list view, no
+// session.StateFile serialized as-is. No bespoke list view, no
 // derived fields: callers that need liveness can probe the flock
-// themselves, or call `hoot resolve` and look at the hootty
+// themselves, or call `hoot resolve` and look at the session
 // PID.
 func cmdList(args []string) error {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
@@ -21,7 +21,7 @@ func cmdList(args []string) error {
 		return err
 	}
 
-	store := hootty.NewStore(*stateDir)
+	store := session.NewStore(*stateDir)
 	states, err := store.List()
 	if err != nil {
 		return err
@@ -49,11 +49,11 @@ func cmdResolve(args []string) error {
 		return fmt.Errorf("resolve: expected exactly one <id-or-prefix> argument")
 	}
 
-	store := hootty.NewStore(*stateDir)
+	store := session.NewStore(*stateDir)
 	state, err := store.Resolve(rest[0])
 	if err != nil {
 		return err
 	}
-	fmt.Println(state.Hootty.Key)
+	fmt.Println(state.Session.Key)
 	return nil
 }

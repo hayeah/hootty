@@ -141,7 +141,7 @@ The countdown line is rewritten in place each tier (1s → 2s on backoff escalat
 
 ## Trouble report
 
-- **EOF ambiguity (resolved in code, called out in design notes)**: a clean child-exit at the hootty and a bridge-process death both surface as `io.EOF` on the client TCP conn. With reconnect on, EOF triggers a reconnect (which 404s if the session is genuinely gone → exit 2); with `--no-reconnect` it's treated as clean detach (matches local-socket "child exited" semantics). A wire-level `MsgClose` would let us disambiguate; out of scope here.
+- **EOF ambiguity (resolved in code, called out in design notes)**: a clean child-exit at the session and a bridge-process death both surface as `io.EOF` on the client TCP conn. With reconnect on, EOF triggers a reconnect (which 404s if the session is genuinely gone → exit 2); with `--no-reconnect` it's treated as clean detach (matches local-socket "child exited" semantics). A wire-level `MsgClose` would let us disambiguate; out of scope here.
 - **Worktree LSP false positives** in this session: gopls flagged "could not import" / "undefined: defaultStateDir" repeatedly because the worktree wasn't in any `go.work` file. `go build ./...` and `go test ./...` were always the source of truth and stayed clean.
 - **One real bug found via smoke and fixed (`0115313`):** `<prefix>d` mid-backoff returned `ctx.Err()` up the call chain → "hoot attach: context canceled" exit 1. Mapped to clean exit 0 instead.
 - **macOS `sun_path` 104-byte limit** bit the round-trip test (`t.TempDir()` paths exceed it). Fixed by adding a `/tmp`-rooted `shortTempDir` helper, mirroring the one in `hootty_test.go`.

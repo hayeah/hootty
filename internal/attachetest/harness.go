@@ -24,7 +24,7 @@ import (
 )
 
 type Remote struct {
-	PTY    *hootty.LibghosttyPTY
+	PTY    *session.LibghosttyPTY
 	slave  *os.File
 	master *os.File
 	server *httptest.Server
@@ -34,14 +34,14 @@ func NewRemote(t testing.TB, cols, rows uint16) *Remote {
 	return NewRemoteWithOptions(t, cols, rows)
 }
 
-func NewRemoteWithOptions(t testing.TB, cols, rows uint16, opts ...hootty.LibghosttyOption) *Remote {
+func NewRemoteWithOptions(t testing.TB, cols, rows uint16, opts ...session.LibghosttyOption) *Remote {
 	t.Helper()
 	master, slave, err := pty.Open()
 	if err != nil {
 		t.Fatalf("pty.Open: %v", err)
 	}
-	allOpts := append([]hootty.LibghosttyOption{hootty.WithLibghosttyScrollback(200)}, opts...)
-	ptyImpl, err := hootty.NewLibghosttyPTY(master, cols, rows, allOpts...)
+	allOpts := append([]session.LibghosttyOption{session.WithLibghosttyScrollback(200)}, opts...)
+	ptyImpl, err := session.NewLibghosttyPTY(master, cols, rows, allOpts...)
 	if err != nil {
 		_ = slave.Close()
 		_ = master.Close()

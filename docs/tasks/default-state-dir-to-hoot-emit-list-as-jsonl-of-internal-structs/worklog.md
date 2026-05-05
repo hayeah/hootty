@@ -31,7 +31,7 @@ created: 2026-05-02T10:03:16Z
 
 - [x] audit `--state-dir` wiring — all 5 subcommands already use `defaultStateDir()`; only docs/usage strings show it as required
 - [x] capture before-state evidence: `hoot list` text output, plus a run with no `--state-dir` (works)
-- [x] update `cmdList` to emit JSONL of `*hootty.StateFile` directly; drop the alive/created_at text mapping
+- [x] update `cmdList` to emit JSONL of `*session.StateFile` directly; drop the alive/created_at text mapping
 - [x] update `main.go` usage text + README to reflect optional `--state-dir` (attach.go already documented `default: ~/.hoot`)
 - [x] capture after-state evidence: `hoot list` JSONL output, default-state-dir run
 - [x] `go build ./... && go test ./...` clean
@@ -54,15 +54,15 @@ alpha	alive	2026-05-02T17:04:55+07:00
 beta	dead	2026-05-02T17:04:56+07:00
 ```
 
-### `hoot list` — after (JSONL of `hootty.StateFile`)
+### `hoot list` — after (JSONL of `session.StateFile`)
 
 ```
 $ hoot list --state-dir /tmp/before-state
-{"hootty":{"key":"alpha","pid":42761,"created_at":"2026-05-02T17:04:55.413637+07:00"},"state":{"state":"exited","cmd":"/bin/sh -c sleep 60","pid":42762,"started_at":"2026-05-02T10:04:55Z","exited_at":"2026-05-02T10:05:55Z"}}
-{"hootty":{"key":"beta","pid":42770,"created_at":"2026-05-02T17:04:56.475393+07:00"},"state":{"state":"exited","cmd":"/bin/sh -c exit 0","pid":42771,"started_at":"2026-05-02T10:04:56Z","exited_at":"2026-05-02T10:04:56Z"}}
+{"session":{"key":"alpha","pid":42761,"created_at":"2026-05-02T17:04:55.413637+07:00"},"state":{"state":"exited","cmd":"/bin/sh -c sleep 60","pid":42762,"started_at":"2026-05-02T10:04:55Z","exited_at":"2026-05-02T10:05:55Z"}}
+{"session":{"key":"beta","pid":42770,"created_at":"2026-05-02T17:04:56.475393+07:00"},"state":{"state":"exited","cmd":"/bin/sh -c exit 0","pid":42771,"started_at":"2026-05-02T10:04:56Z","exited_at":"2026-05-02T10:04:56Z"}}
 ```
 
-Each line round-trips through `jq -c .` cleanly. Each is the exact byte shape of the on-disk `state.json` for that session — no bespoke type, no derived fields. `IsAlive` is no longer in the output; callers that need liveness can probe the flock directly (`hootty.Store.IsAlive`) or look at `hootty.pid` plus `state.state`.
+Each line round-trips through `jq -c .` cleanly. Each is the exact byte shape of the on-disk `state.json` for that session — no bespoke type, no derived fields. `IsAlive` is no longer in the output; callers that need liveness can probe the flock directly (`session.Store.IsAlive`) or look at `session.pid` plus `state.state`.
 
 ### `--state-dir` defaults to `~/.hoot`
 
@@ -74,7 +74,7 @@ $ HOME="$FAKE" hoot run --key gamma -- /bin/sh -c 'sleep 60'
 hoot: session "gamma" started (state-dir=/tmp/fake-home/.hoot)
 gamma
 $ HOME="$FAKE" hoot list
-{"hootty":{"key":"gamma","pid":42875,"created_at":"2026-05-02T17:05:10.979294+07:00"},"state":{"state":"running","cmd":"/bin/sh -c sleep 60","pid":42876,"started_at":"2026-05-02T10:05:10Z"}}
+{"session":{"key":"gamma","pid":42875,"created_at":"2026-05-02T17:05:10.979294+07:00"},"state":{"state":"running","cmd":"/bin/sh -c sleep 60","pid":42876,"started_at":"2026-05-02T10:05:10Z"}}
 $ ls "$FAKE/.hoot"
 gamma
 ```
@@ -85,7 +85,7 @@ gamma
 
 ```
 $ hoot --help | head -13
-hoot — reference CLI for the hootty library
+hoot — reference CLI for the session library
 
 Usage:
   hoot run     [--state-dir <d>] [--key <k>] -- <cmd> [args...]
@@ -94,7 +94,7 @@ Usage:
   hoot attach  [--state-dir <d>] [--no-full-replay]
                     [--prefix-key <key>] <id-or-prefix>
 
-The session state directory is <state-dir>/<key>/. The hootty
+The session state directory is <state-dir>/<key>/. The session
 serves rpc.sock and writes pty.log inside it. --state-dir defaults
 to ~/.hoot. If --key is omitted, a random short id (3-8 chars
 from 0-9a-z minus l/o) is generated.
@@ -114,6 +114,6 @@ ok  	github.com/hayeah/hootty/internal/shortid	0.609s
 
 ## Trouble report
 
-- The audit was anti-climactic: `defaultStateDir()` already existed in `cmd/hoot/common.go` and every subcommand (`run`, `list`, `resolve`, `attach`, `__hoot`) already wired `--state-dir` with that default. Only the docs (top-level `usage()` in `main.go` and the README synopsis) still showed it as required. `cmd/hoot/attach.go`'s own `--help` already said `default: ~/.hoot`, so no change there.
-- There was no separate "list-only struct" type to delete — the bespoke layer was the inline text mapping (`%s\t%s\t%s` of key/alive/created_at) inside `cmdList`. Replaced that with `json.NewEncoder(os.Stdout).Encode(st)` over `[]*hootty.StateFile`.
-- The JSONL output drops the `alive|dead` flag because `StateFile` doesn't carry liveness — it's a runtime probe of the directory flock. The section text said "one canonical struct, one shape", so I deferred liveness to `hootty.Store.IsAlive` (or to inspecting `state.state` + `hootty.pid`) rather than re-introduce a derived field. If the boss wants liveness back, options are: (a) add an `Alive bool` to a thin envelope (re-introduces a list-only type), or (b) add a `--alive` flag that filters by `IsAlive`. Flagging here so the boss can steer.
+- The audit was anti-climactic: `defaultStateDir()` already existed in `cmd/hoot/common.go` and every subcommand (`run`, `list`, `resolve`, `attach`, `__session`) already wired `--state-dir` with that default. Only the docs (top-level `usage()` in `main.go` and the README synopsis) still showed it as required. `cmd/hoot/attach.go`'s own `--help` already said `default: ~/.hoot`, so no change there.
+- There was no separate "list-only struct" type to delete — the bespoke layer was the inline text mapping (`%s\t%s\t%s` of key/alive/created_at) inside `cmdList`. Replaced that with `json.NewEncoder(os.Stdout).Encode(st)` over `[]*session.StateFile`.
+- The JSONL output drops the `alive|dead` flag because `StateFile` doesn't carry liveness — it's a runtime probe of the directory flock. The section text said "one canonical struct, one shape", so I deferred liveness to `session.Store.IsAlive` (or to inspecting `state.state` + `session.pid`) rather than re-introduce a derived field. If the boss wants liveness back, options are: (a) add an `Alive bool` to a thin envelope (re-introduces a list-only type), or (b) add a `--alive` flag that filters by `IsAlive`. Flagging here so the boss can steer.

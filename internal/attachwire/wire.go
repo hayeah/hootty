@@ -1,5 +1,5 @@
 // Package attachwire defines the tiny TLV protocol that
-// `hoot attach` and the hootty's attach handler speak over
+// `hoot attach` and the session's attach handler speak over
 // a single hijacked rpc.sock connection.
 //
 // Frame format:

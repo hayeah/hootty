@@ -4,7 +4,7 @@ Reusable terminal-UI primitives for PTY-over-WebSocket dashboards.
 Ships a React `TerminalPane` component backed by
 [ghostty-web](https://www.npmjs.com/package/ghostty-web), a thin
 `AttachStream` byte-pipe contract, and a reference WebSocket
-transport matching the hootty library's wire format.
+transport matching the session library's wire format.
 
 ```tsx
 import { TerminalPane, WebSocketAttach } from "@hayeah/termui";
@@ -26,7 +26,7 @@ function SessionTerminal({ sessionKey }: { sessionKey: string }) {
 ## API
 
 - `AttachStream` — interface. Bytes both directions + resize + close.
-- `WebSocketAttach` — reference impl against the hootty's WS
+- `WebSocketAttach` — reference impl against the session's WS
   attach protocol: binary frames carry PTY bytes, text frames
   carry `{"type":"resize","cols":N,"rows":M}`.
 - `attach(opts)` — convenience factory equivalent to
@@ -48,7 +48,7 @@ so the consumer resolves a single version via peer-dep pinning.
 ## Build
 
 `pnpm build` (tsup → ESM + d.ts in `dist/`). Run from the workspace
-root (`libs/hayeah-go/hootty/`) via `pnpm -r build` to build
+root (`libs/hayeah-go/session/`) via `pnpm -r build` to build
 alongside `hootty-webui`.
 
 ## Testing

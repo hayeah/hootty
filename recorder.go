@@ -1,4 +1,4 @@
-package hootty
+package session
 
 import (
 	"bufio"
@@ -19,7 +19,7 @@ const (
 // to keep an authoritative output log of everything the child wrote
 // so asciinema-compatible tools can replay the session.
 //
-// Concurrency: the hootty's read loop is the only writer; the
+// Concurrency: the session's read loop is the only writer; the
 // mutex is defensive against tests that might write from multiple
 // goroutines.
 type Recorder struct {

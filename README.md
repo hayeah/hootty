@@ -7,9 +7,9 @@ embeddable `http.ServeMux` (plain text / HTML / raw VT).
 
 Project home: <https://hootty.dev>.
 
-This is the slimmer cousin of `~/github.com/hayeah/dotfiles/libs/hayeah-go/hootty`,
+This is the slimmer cousin of `~/github.com/hayeah/dotfiles/libs/hayeah-go/session`,
 extracted so it can stand on its own. The major shift from the dotfiles
-version: tmux is no longer a spawn backend. The hootty opens its own
+version: tmux is no longer a spawn backend. The session opens its own
 PTY and runs Ghostty's VT parser against the byte stream
 ([mitchellh/go-libghostty](https://github.com/mitchellh/go-libghostty)).
 
@@ -39,15 +39,15 @@ Prereqs (one-time):
 ## Library shape
 
 ```go
-import "github.com/hayeah/hootty"
+import session "github.com/hayeah/hootty"
 
-ptyImpl, _ := hootty.NewLibghosttyPTY(master, cols, rows,
-    hootty.WithRecorder(recorderFile))
+ptyImpl, _ := session.NewLibghosttyPTY(master, cols, rows,
+    session.WithRecorder(recorderFile))
 
-run := hootty.New(hootty.HoottyConfig{
+run := session.New(session.SessionConfig{
     StateDir: ".state",
     Key:      "demo",
-    Service:  myService,   // implements hootty.Service
+    Service:  myService,   // implements session.Service
     PTY:      ptyImpl,
 })
 err := run.Run(ctx)        // blocks; serves rpc.sock
@@ -93,12 +93,12 @@ hoot serve   [--state-dir <dir>] --bind <host:port> [--prefix /api]
 `--state-dir` defaults to `~/.hoot` for every subcommand.
 
 `hoot list` emits JSONL — one line per session, each line a
-serialized `hootty.StateFile` (the same shape `<dir>/<key>/state.json`
+serialized `session.StateFile` (the same shape `<dir>/<key>/state.json`
 holds on disk). Pipe through `jq -s` if you want an array.
 
-`run` opens a PTY pair, forks an internal hootty process (with the
+`run` opens a PTY pair, forks an internal session process (with the
 master on fd 3 and stdio = slave), and serves the mux on
-`<dir>/<key>/rpc.sock`. The hootty holds a flock on `<dir>/<key>/`
+`<dir>/<key>/rpc.sock`. The session holds a flock on `<dir>/<key>/`
 for the lifetime of the managed child.
 
 Each session directory also contains `pty.cast`, an asciicast v2 JSONL
@@ -117,7 +117,7 @@ matching ids; this is what makes the random ids ergonomic to use.
 
 ### `hoot attach`
 
-`attach` connects the local terminal to a running hootty as a
+`attach` connects the local terminal to a running session as a
 "dumb pipe with two side-channels": stdin → PTY master, master →
 stdout, plus a SIGWINCH → resize side-channel. The local termios is
 put into raw mode (no echo, no line buffering, no `Ctrl-C` →
@@ -175,7 +175,7 @@ fanout before bytes reach the user's real terminal.
 
 Live fanout strips terminal-query escape sequences before sending
 to the user's real terminal (the libghostty emulator on the
-hootty already auto-replies, so a second answer from the user's
+session already auto-replies, so a second answer from the user's
 terminal would inject duplicate bytes into the child's stdin). The
 recorder + emulator branch sees raw bytes; only the user-facing
 fanout is filtered. See `vtquery_stripper.go`.
@@ -246,9 +246,9 @@ Routes (mounted at the bare path and — if `--prefix` is set — at
 | Method | Path                        | Behaviour                                                        |
 |--------|-----------------------------|------------------------------------------------------------------|
 | GET    | `/sessions`                 | `{sessions: [{...StateFile, alive}]}`                            |
-| POST   | `/sessions`                 | `{cmd \| argv, key?}` → forks `hoot __hoot`            |
+| POST   | `/sessions`                 | `{cmd \| argv, key?}` → forks `hoot __session`            |
 | GET    | `/sessions/{key}`           | state.json (alias of `/state`)                                  |
-| DELETE | `/sessions/{key}`           | SIGTERM the hootty by pid (204)                              |
+| DELETE | `/sessions/{key}`           | SIGTERM the session by pid (204)                              |
 | GET    | `/sessions/{key}/state`     | state.json                                                       |
 | GET    | `/sessions/{key}/events`    | SSE proxy of upstream `/events`                                  |
 | GET    | `/sessions/{key}/attach`    | WebSocket bridge to upstream `/attach` (browser)                 |

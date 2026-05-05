@@ -1,13 +1,13 @@
 ---
 status: done
-section: Remove PTY interface and drop SendKeys from hootty lib
-slug: remove-pty-interface-and-drop-sendkeys-from-hootty-lib
+section: Remove PTY interface and drop SendKeys from session lib
+slug: remove-pty-interface-and-drop-sendkeys-from-session-lib
 mode: worktree
 spec:
 created: 2026-05-02T07:42:45Z
 ---
 
-> ## Remove PTY interface and drop SendKeys from hootty lib
+> ## Remove PTY interface and drop SendKeys from session lib
 >
 > ---
 > status:
@@ -26,7 +26,7 @@ created: 2026-05-02T07:42:45Z
 - [x] delete `pty.go` (PTY interface) and `pty_libghostty_keys.go` (key parser)
 - [x] strip SendKeys + KeyEncoder from `pty_libghostty.go`; drop `/pty/send-keys` route
 - [x] remove handleSendKeys from `pty_libghostty_routes.go`
-- [x] switch `HoottyConfig.PTY` / `Runner.PTY()` / `Hootty.PTY()` to concrete `*LibghosttyPTY`; drop the RegisterRoutes type-assertion (call directly)
+- [x] switch `SessionConfig.PTY` / `Runner.PTY()` / `Session.PTY()` to concrete `*LibghosttyPTY`; drop the RegisterRoutes type-assertion (call directly)
 - [x] update `hootty_test.go`: replace `fakePTY` with a real `*LibghosttyPTY` from `pty.Open()`
 - [x] prune `pty_libghostty_test.go` (drop SendKeys + key-parser tests)
 - [x] update README.md (remove send-keys row, refresh blurb)
@@ -35,10 +35,10 @@ created: 2026-05-02T07:42:45Z
 
 ## Agent log
 - 2026-05-02 — landed everything in a single commit `8543a45` on branch
-  `remove-pty-interface-and-drop-sendkeys-from-hootty-lib`
+  `remove-pty-interface-and-drop-sendkeys-from-session-lib`
   (9 files, +53 / -296). Net deletion of two files (`pty.go`,
   `pty_libghostty_keys.go`) plus surgical strips elsewhere.
-- Decision: `HoottyConfig.PTY` is now `*LibghosttyPTY` (concrete),
+- Decision: `SessionConfig.PTY` is now `*LibghosttyPTY` (concrete),
   not an interface — matches the section directive. The fakePTY stub
   in `hootty_test.go` was the only thing the interface bought us
   in tests, and it's cheap to swap for a real `*LibghosttyPTY` built
@@ -82,7 +82,7 @@ $ curl -s --unix-socket $SD/smoke/rpc.sock http://x/pty/text
 hello-from-child
 
 $ curl -s --unix-socket $SD/smoke/rpc.sock http://x/state
-{"hootty":{"key":"smoke","pid":23781,...},
+{"session":{"key":"smoke","pid":23781,...},
  "state":{"state":"running","cmd":"bash -c echo hello-from-child; sleep 5","pid":23782,...}}
 
 $ # /pty/send-keys is gone:
@@ -95,7 +95,7 @@ $ curl -s -o /dev/null -w "HTTP %{http_code}\n" -X POST --unix-socket $SD/smoke/
        --data-binary $'\x03' http://x/pty/input
 HTTP 204
 
-$ # Child got SIGINT, hootty exited, rpc.sock is gone:
+$ # Child got SIGINT, session exited, rpc.sock is gone:
 $ curl -s --unix-socket $SD/smoke/rpc.sock http://x/state
 (no such file or directory)
 ```
@@ -107,5 +107,5 @@ and Ctrl-C still works through `Write` / `/pty/input`.
 Nothing of note. The interface-to-concrete swap was mechanical; the
 only real edit-of-judgment was deciding to build `newTestPTY(t)` on
 top of `pty.Open()` rather than retain a no-op stub — the cost is one
-extra real PTY pair per test that needed a Hootty (~5), which is
+extra real PTY pair per test that needed a Session (~5), which is
 trivial.

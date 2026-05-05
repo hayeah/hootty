@@ -1,4 +1,4 @@
-package hootty
+package session
 
 import (
 	"bytes"
@@ -21,14 +21,14 @@ import (
 // goroutine).
 //
 // Construction flow: the parent process (e.g. `hoot run`) opens
-// a PTY pair via github.com/creack/pty, forks the hootty with
+// a PTY pair via github.com/creack/pty, forks the session with
 // Stdin/Stdout/Stderr = slave and ExtraFiles = [master]. Inside the
-// hootty, the master arrives at fd 3:
+// session, the master arrives at fd 3:
 //
 //	master := os.NewFile(3, "pty-master")
 //	pty, err := NewLibghosttyPTY(master, cols, rows, opts...)
 //
-// The Service's exec.Cmd.Start inherits stdio from the hootty, so
+// The Service's exec.Cmd.Start inherits stdio from the session, so
 // the child ends up inside the PTY automatically.
 //
 // Recorder: the dispatcher tees every chunk it receives to the
@@ -95,7 +95,7 @@ func WithRecorder(rec *Recorder) LibghosttyOption {
 
 // NewLibghosttyPTY wraps an existing PTY master file. Caller retains
 // ownership of master's lifecycle: closing master on shutdown is the
-// caller's job (typically the hootty's Run flow closes it via
+// caller's job (typically the session's Run flow closes it via
 // LibghosttyPTY.Close → which only stops the dispatcher; the master
 // fd close is the caller's).
 //
@@ -356,7 +356,7 @@ func (p *LibghosttyPTY) formatString(format libghostty.FormatterFormat) (string,
 // Resize updates both the kernel-level PTY winsize and the
 // emulator's grid. TIOCSWINSZ goes on the master fd; for this to
 // keep working across the child's job-control handoff, the
-// hootty process must NOT share the child's session/ctty —
+// session process must NOT share the child's session/ctty —
 // i.e. the process holding the master is session-less for this tty,
 // and the child does Setctty to claim the slave. See cmd/hoot
 // for how that's wired.
@@ -409,11 +409,11 @@ func (p *LibghosttyPTY) Size() (cols, rows uint16) {
 //
 // Includes scrollback (up to max_scrollback × cols), the cursor
 // position, the active SGR style, and any non-default terminal modes,
-// so a fresh terminal repaints the same picture the hootty sees.
+// so a fresh terminal repaints the same picture the session sees.
 //
 // Known limitation: when the child is on the alt screen (tmux, vim,
 // less, etc.) the snapshot is just the alt-screen contents — the
-// primary scrollback the hootty recorded is preserved internally
+// primary scrollback the session recorded is preserved internally
 // but invisible to the formatter, and when the child later exits alt
 // the user's terminal restores its own (empty) primary. See
 // ~/Dropbox/notes/2026-05-02/hoot-alt-screen-scrollback-gap_claude.md.
@@ -652,7 +652,7 @@ func (p *LibghosttyPTY) SubscribeWithSnapshotParts() (<-chan []byte, []byte, []b
 func (p *LibghosttyPTY) Recorder() *Recorder { return p.rec }
 
 // RegisterRoutes contributes /pty/{text,html,vt,stream,input,resize}
-// and /attach to the hootty's mux. Runner.Run invokes this
+// and /attach to the session's mux. Runner.Run invokes this
 // automatically.
 func (p *LibghosttyPTY) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/pty/text", p.handleText)

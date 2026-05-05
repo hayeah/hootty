@@ -93,10 +93,10 @@ type attachMessage struct {
 
 // handleAttach is the browser-facing WebSocket bridge. It
 // terminates a WS on the client side and bridges it to the
-// hootty's per-session /attach (HTTP/1.1 Upgrade →
+// session's per-session /attach (HTTP/1.1 Upgrade →
 // attachwire framed protocol) on rpc.sock.
 //
-// Wire mapping (browser ↔ bridge ↔ hootty):
+// Wire mapping (browser ↔ bridge ↔ session):
 //
 //	browser binary  ←  attachwire MsgOutput   (PTY bytes server→client)
 //	browser binary  →  attachwire MsgInput    (raw input client→server)
@@ -106,7 +106,7 @@ type attachMessage struct {
 //	                                             remote-size mirror)
 //
 // Initial attachwire Hello uses 80x24; the browser's xterm-style
-// addon will fire a resize on mount which reaches the hootty
+// addon will fire a resize on mount which reaches the session
 // as the first MsgSize.
 func (s *serveState) handleAttach(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
@@ -224,7 +224,7 @@ func dialAttach(ctx context.Context, sockPath string) (*upstreamConn, error) {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		conn.Close()
-		return nil, fmt.Errorf("hootty refused upgrade: %s\n%s", resp.Status, string(body))
+		return nil, fmt.Errorf("session refused upgrade: %s\n%s", resp.Status, string(body))
 	}
 	resp.Body.Close()
 	return &upstreamConn{conn: conn, reader: bufrw.Reader}, nil
@@ -257,7 +257,7 @@ func dialSock(ctx context.Context, sockPath string) (net.Conn, error) {
 	return d.DialContext(ctx, "unix", filepath.Base(sockPath))
 }
 
-// pumpUpstreamToWS reads attachwire frames from the hootty and
+// pumpUpstreamToWS reads attachwire frames from the session and
 // forwards MsgOutput as binary WS frames. MsgSize is dropped (the
 // browser doesn't need to mirror remote size). Anything else is a
 // protocol error.
@@ -275,9 +275,9 @@ func pumpUpstreamToWS(ctx context.Context, ws *websocket.Conn, r *bufio.Reader) 
 		case attachwire.MsgSize:
 			// ignore — browser sets its own size on resize
 		case attachwire.MsgHello, attachwire.MsgInput:
-			return fmt.Errorf("hootty sent unexpected frame 0x%02x", typ)
+			return fmt.Errorf("session sent unexpected frame 0x%02x", typ)
 		default:
-			return fmt.Errorf("hootty sent unknown frame 0x%02x", typ)
+			return fmt.Errorf("session sent unknown frame 0x%02x", typ)
 		}
 	}
 }
@@ -375,7 +375,7 @@ func (s *serveState) handleAttachRaw(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	sockPath := filepath.Join(s.stateDir, state.Hootty.Key, "rpc.sock")
+	sockPath := filepath.Join(s.stateDir, state.Session.Key, "rpc.sock")
 
 	// Step 1: dial rpc.sock and complete the upstream Upgrade. We
 	// reuse dialAttach which already performs the HTTP/1.1 Upgrade

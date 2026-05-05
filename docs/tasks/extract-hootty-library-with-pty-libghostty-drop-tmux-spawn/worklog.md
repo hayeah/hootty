@@ -1,20 +1,20 @@
 ---
 status: done
-section: Extract hootty library with pty+libghostty (drop tmux spawn)
-slug: extract-hootty-library-with-pty-libghostty-drop-tmux-spawn
+section: Extract session library with pty+libghostty (drop tmux spawn)
+slug: extract-session-library-with-pty-libghostty-drop-tmux-spawn
 mode: worktree
 spec: spec.md
 created: 2026-05-02T06:20:48Z
 ---
 
-> ## Extract hootty library with pty+libghostty (drop tmux spawn)
+> ## Extract session library with pty+libghostty (drop tmux spawn)
 >
 > ---
 > status:
 >   type: open
 > ---
 >
-> Extract the hootty code currently living at `~/github.com/hayeah/dotfiles/libs/hayeah-go/hootty` into a standalone library repo at `hayeah/hootty`. The point is to stop using tmux as a spawn backend — instead, spawn processes directly on a PTY backed by go-libghostty, tee the raw PTY output for replay, and expose terminal state through an HTTP API so consumers can render it however they want (plain text, HTML via the ghostty formatter, or raw VT for an attach client).
+> Extract the session code currently living at `~/github.com/hayeah/dotfiles/libs/hayeah-go/session` into a standalone library repo at `hayeah/session`. The point is to stop using tmux as a spawn backend — instead, spawn processes directly on a PTY backed by go-libghostty, tee the raw PTY output for replay, and expose terminal state through an HTTP API so consumers can render it however they want (plain text, HTML via the ghostty formatter, or raw VT for an attach client).
 >
 > Reference for the libghostty binding: `/Users/me/Dropbox/notes/2026-04-30/go-libghostty-guide_claude.md`.
 >
@@ -39,7 +39,7 @@ created: 2026-05-02T06:20:48Z
 >
 > No RFC gate — go straight to implementation. Write a spec.md as you go for your own thinking, but don't park for review.
 >
-> - [ ] extract hootty lib to standalone repo, swap tmux spawn for pty+libghostty, ship the example `hoot` CLI
+> - [ ] extract session lib to standalone repo, swap tmux spawn for pty+libghostty, ship the example `hoot` CLI
 
 ## Todos
 <!-- Finer-grained than the boss-doc top-level checkboxes. Tick off as you go. -->
@@ -49,7 +49,7 @@ created: 2026-05-02T06:20:48Z
 - [x] write go.mod, Makefile, README skeleton
 
 ### Phase 2 — port library plumbing
-- [x] copy atomic/state/store/flock/poll/tailfile/signals/eventbus/service/hootty_iface/hootty + tests
+- [x] copy atomic/state/store/flock/poll/tailfile/signals/eventbus/service/hootty_iface/session + tests
 - [x] strip TmuxSpawn/Plugin/KillOnExit; rewrite imports to `github.com/hayeah/hootty`
 - [x] `go test ./...` passes for the non-PTY bits
 
@@ -76,17 +76,17 @@ created: 2026-05-02T06:20:48Z
 - [x] README: motivation, API, build setup, hoot usage, future work (covered in repo README at phase 1; verified accurate)
 
 ## Agent log
-- 2026-05-02T06:24Z spec written; new repo hayeah/hootty inited+checked out; phase 1 todo seeded
+- 2026-05-02T06:24Z spec written; new repo hayeah/session inited+checked out; phase 1 todo seeded
 - 2026-05-02T06:26Z phase 1 done: go.mod + Makefile (pkg-config) + README skeleton. commit 5652d48
 - 2026-05-02T06:29Z phase 2 done: lib plumbing ported, tests pass with fakePTY (fe6f087)
 - 2026-05-02T06:32Z phases 3+4 done: libghostty pty (dispatcher, WithWritePty, recorder tee) + 7 http routes; vet+test pass (eeb7cba)
-- 2026-05-02T06:41Z all phases done; e2e smoke captured at tmp/133940_813-e2e.txt; status -> done (ebe5bca, branch extract-hootty-library-with-pty-libghostty-drop-tmux-spawn)
+- 2026-05-02T06:41Z all phases done; e2e smoke captured at tmp/133940_813-e2e.txt; status -> done (ebe5bca, branch extract-session-library-with-pty-libghostty-drop-tmux-spawn)
 
 ## Boss log
 
 ## Evidence
 
-New repo: `~/github.com/hayeah/hootty` (worktree at `repos/github.com/hayeah/hootty`, branch `extract-hootty-library-with-pty-libghostty-drop-tmux-spawn`).
+New repo: `~/github.com/hayeah/hootty` (worktree at `repos/github.com/hayeah/hootty`, branch `extract-session-library-with-pty-libghostty-drop-tmux-spawn`).
 
 ### Build + tests
 
@@ -114,7 +114,7 @@ hoot: session "demo" started (state-dir=/tmp/sv.fRuJ3Q)
 demo
 
 $ ls /tmp/sv.fRuJ3Q/demo/
-pty.log  rpc.sock  state.json  hootty.log
+pty.log  rpc.sock  state.json  session.log
 
 $ curl -s --unix-socket .../rpc.sock http://x/pty/text
 hello-world
@@ -139,14 +139,14 @@ $ xxd /tmp/sv.fRuJ3Q/demo/pty.log
 00000010: 6d62 6f6c 641b 5b30 6d0d 0a1b 5b33 316d  mbold.[0m...[31m
 00000020: 7265 641b 5b30 6d0d 0a                   red.[0m..
 
-# Send Ctrl-C: child exits, hootty publishes exit state.
+# Send Ctrl-C: child exits, session publishes exit state.
 $ curl -sX POST --unix-socket .../rpc.sock \
     -d '{"keys":["C-c"]}' http://x/pty/send-keys -w "HTTP %{http_code}\n"
 HTTP 204
 
 $ cat /tmp/sv.fRuJ3Q/demo/state.json
 {
-  "hootty": {"key":"demo","pid":17585,...},
+  "session": {"key":"demo","pid":17585,...},
   "state": {"state":"exited","pid":17586,"exit_code":-1,"exited_at":"..."}
 }
 ```
@@ -158,13 +158,13 @@ What this proves:
   - `/pty/text` → plain text (no escapes).
   - `/pty/html` → bold via `font-weight: bold`, red via `var(--vt-palette-1)`.
   - `/pty/vt` → self-contained ANSI replay (escapes preserved).
-- live stream + raw input: `/pty/send-keys` encodes Ctrl-C through libghostty's KeyEncoder, the child receives SIGINT, the hootty publishes `state=exited` in `state.json` and tears down `rpc.sock`.
+- live stream + raw input: `/pty/send-keys` encodes Ctrl-C through libghostty's KeyEncoder, the child receives SIGINT, the session publishes `state=exited` in `state.json` and tears down `rpc.sock`.
 
 ## Trouble report
 
 - libghostty cgo build is fiddly: needs `mitchellh/go-libghostty` checked out *and* built (`make build` there) before `make build` in this repo can compile. Captured in the README; documented in `Makefile`'s `LIBGHOSTTY` knob. Nothing actionable beyond docs unless mitchellh ships a tagged release with prebuilt binaries — track upstream.
 - libghostty has no semver tag, so `go.mod` carries a pseudo-version and the worktree relies on a gitignored `go.work` for the `replace` directive. Once upstream tags, drop the `go.work`.
 - libghostty's `MaxScrollback` defaults to 0 (no scrollback at all). Surprising; documented in design notes and pinned to 10_000 in `NewLibghosttyPTY`.
-- Worker's slog leaked into the captured PTY stream on the first smoke run because the worker's stderr is the PTY slave. Fixed by redirecting `slog.Default()` to `<state>/<key>/hootty.log` in `cmd/hoot`. Library-side users who embed the Runner in their own server need to be aware of this if they ever route a worker process's stdio onto a PTY (rare; documented in design notes).
+- Worker's slog leaked into the captured PTY stream on the first smoke run because the worker's stderr is the PTY slave. Fixed by redirecting `slog.Default()` to `<state>/<key>/session.log` in `cmd/hoot`. Library-side users who embed the Runner in their own server need to be aware of this if they ever route a worker process's stdio onto a PTY (rare; documented in design notes).
 - Test races: master.Read → dispatcher → format is async with respect to test goroutines, so a single round-trip can race the readLoop's feed action. Tests poll FormatText on a 2s deadline. Could be cleaned up by adding a synchronous `Sync()` primitive to `LibghosttyPTY` if this comes up again.
 - #friction: `boss checkout` assumes the target repo already exists (with at least one commit on master). Since this task creates a brand-new repo, I had to `git init`/baseline-commit/`boss checkout` in two steps. Not blocking but worth a note for boss UX.

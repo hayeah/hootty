@@ -42,7 +42,7 @@ created: 2026-05-05T03:47:55Z
 > - [ ] implement per spec
 
 ## Todos
-- [x] check out and inspect `hootty`, `go-libghostty`, and Ghostty source
+- [x] check out and inspect `session`, `go-libghostty`, and Ghostty source
 - [x] read required notes and write `spec.md`
 - [x] add primary-screen filter with unit tests — 6333014
 - [x] add primary mirror terminal lifecycle to `LibghosttyPTY` — d508dc3
@@ -52,7 +52,7 @@ created: 2026-05-05T03:47:55Z
 - [x] run verification and commit
 
 ## Agent log
-- 2026-05-05T04:15Z Read AGENT_LOOP, required notes, hootty attach/PTY code, go-libghostty formatter/terminal wrappers, and Ghostty Zig formatter/screen internals. Wrote spec.md and proceeding end-to-end per boss note (no RFC stop).
+- 2026-05-05T04:15Z Read AGENT_LOOP, required notes, session attach/PTY code, go-libghostty formatter/terminal wrappers, and Ghostty Zig formatter/screen internals. Wrote spec.md and proceeding end-to-end per boss note (no RFC stop).
 - 2026-05-05T04:24Z Added primary-screen VT filter and tests for primary passthrough, alt suppression, chunk boundaries, legacy alt modes, and multi-param DECSET/DECRST. Commit 6333014.
 - 2026-05-05T04:29Z Wired primary-only libghostty terminal into PTY lifecycle, resized/closed it with the real terminal, and added SubscribeWithSnapshot so attach snapshots and live subscription registration are serialized. Commit d508dc3.
 - 2026-05-05T04:35Z Added replay tests proving alt-screen snapshots prefix primary scrollback before alt content and that a live alt-exit restores a populated client primary. Commit bd18049.

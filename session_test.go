@@ -1,4 +1,4 @@
-package hootty
+package session
 
 import (
 	"context"
@@ -52,12 +52,12 @@ func newTestPTY(t *testing.T) *LibghosttyPTY {
 }
 
 // servicefunc lets tests write inline Service implementations.
-type serviceFunc func(ctx context.Context, super Hootty) error
+type serviceFunc func(ctx context.Context, super Session) error
 
-func (f serviceFunc) Run(ctx context.Context, super Hootty) error { return f(ctx, super) }
+func (f serviceFunc) Run(ctx context.Context, super Session) error { return f(ctx, super) }
 
 // TestRunnerRunsServiceAndSignalsCancellation exercises the whole
-// Runner.Run happy path: Service.Run receives a Hootty,
+// Runner.Run happy path: Service.Run receives a Session,
 // publishes initial state, and exits when ctx is cancelled. Also
 // verifies that UpdateState writes state.json and that /state over
 // rpc.sock returns the update.
@@ -68,7 +68,7 @@ func TestRunnerRunsServiceAndSignalsCancellation(t *testing.T) {
 	svcStarted := make(chan struct{})
 	svcExited := make(chan error, 1)
 
-	svc := serviceFunc(func(ctx context.Context, super Hootty) error {
+	svc := serviceFunc(func(ctx context.Context, super Session) error {
 		// Publish initial state.
 		if err := super.UpdateState(map[string]string{"state": "starting"}); err != nil {
 			return fmt.Errorf("initial UpdateState: %w", err)
@@ -78,7 +78,7 @@ func TestRunnerRunsServiceAndSignalsCancellation(t *testing.T) {
 		return ctx.Err()
 	})
 
-	runner := New(HoottyConfig{
+	runner := New(SessionConfig{
 		StateDir: dir,
 		Key:      "demo",
 		Service:  svc,
@@ -106,11 +106,11 @@ func TestRunnerRunsServiceAndSignalsCancellation(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&sf); err != nil {
 		t.Fatalf("decode /state: %v", err)
 	}
-	if sf.Hootty.Key != "demo" {
-		t.Errorf("got hootty.key=%q, want demo", sf.Hootty.Key)
+	if sf.Session.Key != "demo" {
+		t.Errorf("got session.key=%q, want demo", sf.Session.Key)
 	}
-	if sf.Hootty.PID == 0 {
-		t.Errorf("expected hootty.pid to be set, got 0")
+	if sf.Session.PID == 0 {
+		t.Errorf("expected session.pid to be set, got 0")
 	}
 	var stateBlob map[string]string
 	if err := json.Unmarshal(sf.State, &stateBlob); err != nil {
@@ -139,12 +139,12 @@ func TestRunnerRunsServiceAndSignalsCancellation(t *testing.T) {
 func TestRunnerRejectsIncompleteConfig(t *testing.T) {
 	tests := []struct {
 		name string
-		cfg  HoottyConfig
+		cfg  SessionConfig
 	}{
-		{"no service", HoottyConfig{StateDir: shortTempDir(t), Key: "k", PTY: newTestPTY(t)}},
-		{"no pty", HoottyConfig{StateDir: shortTempDir(t), Key: "k", Service: serviceFunc(func(context.Context, Hootty) error { return nil })}},
-		{"no key", HoottyConfig{StateDir: shortTempDir(t), Service: serviceFunc(func(context.Context, Hootty) error { return nil }), PTY: newTestPTY(t)}},
-		{"no state dir", HoottyConfig{Key: "k", Service: serviceFunc(func(context.Context, Hootty) error { return nil }), PTY: newTestPTY(t)}},
+		{"no service", SessionConfig{StateDir: shortTempDir(t), Key: "k", PTY: newTestPTY(t)}},
+		{"no pty", SessionConfig{StateDir: shortTempDir(t), Key: "k", Service: serviceFunc(func(context.Context, Session) error { return nil })}},
+		{"no key", SessionConfig{StateDir: shortTempDir(t), Service: serviceFunc(func(context.Context, Session) error { return nil }), PTY: newTestPTY(t)}},
+		{"no state dir", SessionConfig{Key: "k", Service: serviceFunc(func(context.Context, Session) error { return nil }), PTY: newTestPTY(t)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

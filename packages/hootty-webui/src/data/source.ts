@@ -15,7 +15,7 @@ export interface DataSource {
 
   // createSession spawns a new session with the given shell command
   // (e.g. "bash -l"). Mock returns immediately with a fake summary;
-  // Live POSTs to /api/sessions and waits for the hootty's
+  // Live POSTs to /api/sessions and waits for the session's
   // initial state to be published.
   createSession(cmd: string): Promise<SessionSummary>;
 

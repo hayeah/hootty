@@ -1,11 +1,11 @@
-# spec.md — extract hootty library; pty+libghostty (drop tmux spawn)
+# spec.md — extract session library; pty+libghostty (drop tmux spawn)
 
 ## Goal
 
-Lift the hootty code at `~/github.com/hayeah/dotfiles/libs/hayeah-go/hootty` into a new standalone repo `github.com/hayeah/hootty`. Trim it to the bits the task names: a process hootty that spawns a child on a libghostty-backed PTY, tees the raw output for replay, and exposes terminal state through an embeddable `http.ServeMux` (text / HTML / raw VT). Ship a small `hoot` example CLI that serves the mux on a unix socket.
+Lift the session code at `~/github.com/hayeah/dotfiles/libs/hayeah-go/session` into a new standalone repo `github.com/hayeah/hootty`. Trim it to the bits the task names: a process session that spawns a child on a libghostty-backed PTY, tees the raw output for replay, and exposes terminal state through an embeddable `http.ServeMux` (text / HTML / raw VT). Ship a small `hoot` example CLI that serves the mux on a unix socket.
 
 In scope:
-- New repo `hayeah/hootty` (module `github.com/hayeah/hootty`).
+- New repo `hayeah/session` (module `github.com/hayeah/hootty`).
 - Library: PTY spawn + libghostty VT + tee recorder + HTTP mux.
 - Switch VT binding from `code.selman.me/hauntty/libghostty` (WASM) to `github.com/mitchellh/go-libghostty` (cgo). The task brief points at the mitchellh binding's guide as reference.
 - Example `hoot` CLI: launches a process with a target dir, serves the mux on `<dir>/rpc.sock`.
@@ -22,12 +22,12 @@ Explicitly out of scope (per task brief):
 Repo layout:
 
 ```
-hayeah/hootty/
+hayeah/session/
   go.mod                          # module github.com/hayeah/hootty
   README.md
   Makefile                        # libghostty-vt build/PKG_CONFIG glue
-  hootty.go                   # Runner, Mux(), Run(ctx)
-  hootty_iface.go             # Hootty interface
+  session.go                   # Runner, Mux(), Run(ctx)
+  hootty_iface.go             # Session interface
   service.go                      # Service interface
   pty.go                          # PTY interface
   pty_libghostty.go               # libghostty-backed PTY
@@ -42,8 +42,8 @@ hayeah/hootty/
 ```
 
 Key flow (matches existing dotfiles design — emulator pattern):
-1. `hoot <args> -- <cmd>` opens a PTY pair via `creack/pty`, sets winsize, forks itself with `__hoot` subcommand: stdio = slave, ExtraFiles[0] = master, Setsid (no controlling tty in parent).
-2. `__hoot` picks master off fd 3, builds `LibghosttyPTY`, builds the `Runner`, calls `runner.Run(ctx)`.
+1. `hoot <args> -- <cmd>` opens a PTY pair via `creack/pty`, sets winsize, forks itself with `__session` subcommand: stdio = slave, ExtraFiles[0] = master, Setsid (no controlling tty in parent).
+2. `__session` picks master off fd 3, builds `LibghosttyPTY`, builds the `Runner`, calls `runner.Run(ctx)`.
 3. `Runner.Run` flocks `<dir>/`, writes initial `state.json`, registers default routes (`/state`, `/events`) plus PTY routes, listens on `<dir>/rpc.sock`.
 4. The default `RunCmdService` `exec.Cmd`s the user command with stdio = inherited (slave), `Setctty=true Ctty=0`, publishes state transitions, waits.
 5. `LibghosttyPTY.readLoop` reads master → tees raw bytes to `<dir>/pty.log` + feeds the libghostty Terminal + fans out to live subscribers.
@@ -84,9 +84,9 @@ Phase 1 — repo skeleton
 - Add Makefile + README skeleton.
 
 Phase 2 — port library bits (no PTY yet)
-- Copy `atomic.go state.go store.go flock.go poll.go tailfile.go signals.go eventbus.go service.go hootty_iface.go hootty.go` (and their tests) into the new repo. Strip TmuxSpawn references.
+- Copy `atomic.go state.go store.go flock.go poll.go tailfile.go signals.go eventbus.go service.go hootty_iface.go session.go` (and their tests) into the new repo. Strip TmuxSpawn references.
 - Update import paths to `github.com/hayeah/hootty`.
-- Drop the `Plugin`/`KillOnExit`/`Spawn` shape from old `HoottyConfig`. Keep the four-field shape that the dotfiles version already converged on (StateDir, Key, Service, PTY).
+- Drop the `Plugin`/`KillOnExit`/`Spawn` shape from old `SessionConfig`. Keep the four-field shape that the dotfiles version already converged on (StateDir, Key, Service, PTY).
 - `go vet ./...` + run the tests that don't need PTY.
 
 Phase 3 — pty + libghostty (the meat)
@@ -101,7 +101,7 @@ Phase 4 — http routes
 - `RegisterRoutes(mux)` is what `Runner.Run` calls when `cfg.PTY` implements the optional interface — same lift as dotfiles.
 
 Phase 5 — `hoot` CLI
-- `cmd/hoot/{main,run,hoot,service,common}.go`. Two subcommands: `hoot run -- <cmd>` (parent) and `hoot __hoot --key K --state-dir D -- <cmd>` (child fork). Shape mirrors dotfiles' ptydemo, just renamed and trimmed.
+- `cmd/hoot/{main,run,hoot,service,common}.go`. Two subcommands: `hoot run -- <cmd>` (parent) and `hoot __session --key K --state-dir D -- <cmd>` (child fork). Shape mirrors dotfiles' ptydemo, just renamed and trimmed.
 
 Phase 6 — verification
 - Unit tests for: store, atomic write, flock, recorder roundtrip, libghostty PTY (feed bytes, dump screen, format html/plain/vt, send-keys, resize). Pattern-match dotfiles' `pty_libghostty_test.go` but rewritten for mitchellh API.
@@ -144,9 +144,9 @@ None — task brief is concrete enough to go straight to implementation. Will ap
   - Dropped the `?lines=N` parameter the dotfiles version had stubbed (it was a TODO, never implemented — libghostty's formatter has no row-range API, so honoring it would mean walking the grid by hand). Same reason it was a no-op there. Document in the README if anyone asks.
   - HTML output is just the formatter's fragment (single styled `<div>` with `font-family: monospace; white-space: pre`). Consumers wrap and supply palette CSS — see the libghostty guide for the recipe.
 
-- 2026-05-02T06:40Z — Worker stderr leaks into the captured PTY stream because the worker process inherits stdio = PTY slave; the hootty lib's default `slog.Default()` writes to stderr → the slave → the master → libghostty Terminal → `/pty/text` shows the hootty's own log lines.
-  - Caught at e2e smoke: `acquired flock hootty=demo` appeared in the first `/pty/text` capture.
-  - Fix: in `cmd/hoot/hoot.go` (the `__hoot` entry), redirect `slog.Default()` to `<state>/<key>/hootty.log` before constructing the Runner. Falls back to `io.Discard` if the file can't be opened.
+- 2026-05-02T06:40Z — Worker stderr leaks into the captured PTY stream because the worker process inherits stdio = PTY slave; the session lib's default `slog.Default()` writes to stderr → the slave → the master → libghostty Terminal → `/pty/text` shows the session's own log lines.
+  - Caught at e2e smoke: `acquired flock session=demo` appeared in the first `/pty/text` capture.
+  - Fix: in `cmd/hoot/session.go` (the `__session` entry), redirect `slog.Default()` to `<state>/<key>/session.log` before constructing the Runner. Falls back to `io.Discard` if the file can't be opened.
   - This is an example-CLI concern, not a library concern. Library users embedding the Runner in their own server keep their own `slog.Default()`. Documented behavior: when running a worker process whose stdio is a PTY, redirect logging to a file or `io.Discard`.
 
 - 2026-05-02T06:40Z — Test polling vs. round-trip-flush.

@@ -1,12 +1,12 @@
-// Command hoot is a small reference consumer of the hootty
+// Command hoot is a small reference consumer of the session
 // library: it spawns a single process on a libghostty-backed PTY,
-// records output to <dir>/<key>/pty.cast, and serves the hootty
+// records output to <dir>/<key>/pty.cast, and serves the session
 // mux on <dir>/<key>/rpc.sock.
 //
 // Subcommands:
 //
 //	hoot run [flags] -- <cmd> [args...]    spawn a session
-//	hoot __hoot [flags] -- <cmd> ...  (internal hootty)
+//	hoot __session [flags] -- <cmd> ...  (internal session)
 package main
 
 import (
@@ -34,8 +34,8 @@ func main() {
 		os.Exit(cmdAttach(args))
 	case "serve":
 		err = cmdServe(args)
-	case "__hoot":
-		err = cmdHoot(args)
+	case "__session":
+		err = cmdSession(args)
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -51,7 +51,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `hoot — reference CLI for the hootty library
+	fmt.Fprint(os.Stderr, `hoot — reference CLI for the session library
 
 Usage:
   hoot run     [--state-dir <d>] [--key <k>] -- <cmd> [args...]
@@ -62,7 +62,7 @@ Usage:
                     [--prefix-key <key>] <id-or-prefix>
   hoot serve   [--state-dir <d>] --bind <host:port> [--prefix /api]
 
-The session state directory is <state-dir>/<key>/. The hootty
+The session state directory is <state-dir>/<key>/. The session
 serves rpc.sock and writes pty.cast inside it. --state-dir defaults
 to ~/.hoot. If --key is omitted, a random short id (3-8 chars
 from 0-9a-z minus l/o) is generated.

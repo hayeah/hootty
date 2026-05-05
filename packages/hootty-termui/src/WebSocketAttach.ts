@@ -6,7 +6,7 @@ export interface AttachOptions {
   url: string;
 
   // Text side-channel encoder for resize messages. Defaults to the
-  // hootty's envelope (JSON {type:"resize", cols, rows}).
+  // session's envelope (JSON {type:"resize", cols, rows}).
   // Override if the backend expects a different shape.
   encodeResize?: (cols: number, rows: number) => string;
 }

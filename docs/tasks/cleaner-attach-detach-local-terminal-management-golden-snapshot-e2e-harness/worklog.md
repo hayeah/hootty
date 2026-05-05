@@ -34,9 +34,9 @@ created: 2026-05-05T04:47:01Z
 >
 > - A small Go test harness that spins up:
 >   - a libghostty terminal acting as the **remote child** (write fixture bytes into it: scrollback + visible content + cursor position + SGR state)
->   - a `LibghosttyPTY` wrapping a real PTY pair, plumbed through the hootty server
+>   - a `LibghosttyPTY` wrapping a real PTY pair, plumbed through the session server
 >   - a **local libghostty** that consumes attach client output, simulating the user's real terminal
-> - Drive an end-to-end attach → some live activity → detach cycle through the hootty + attach client, then snapshot the local libghostty's state (scrollback ring + visible screen + cursor + style) at well-defined points: after attach paint, after some live updates, after detach clear.
+> - Drive an end-to-end attach → some live activity → detach cycle through the session + attach client, then snapshot the local libghostty's state (scrollback ring + visible screen + cursor + style) at well-defined points: after attach paint, after some live updates, after detach clear.
 > - Compare snapshots against checked-in golden files. Env flag (e.g. `UPDATE_GOLDENS=1`) regenerates them; CI / normal `go test` reads them.
 > - Goldens are textual: dump `FormatVT` of the local terminal at the snapshot point, plus a small header (cols×rows, cursor row/col, active SGR, active screen). Git-diffable.
 >
@@ -59,7 +59,7 @@ created: 2026-05-05T04:47:01Z
 ## Todos
 <!-- Finer-grained than the boss-doc top-level checkboxes. Tick off as you go. -->
 
-- [x] Check out `hayeah/hootty`, read the upstream attach/detach spec, and write workspace `spec.md`
+- [x] Check out `hayeah/session`, read the upstream attach/detach spec, and write workspace `spec.md`
 - [x] Implement `SnapshotParts()` / atomic snapshot-parts subscription in `LibghosttyPTY`
 - [x] Add attachwire snapshot-part frame types and server-side transmission
 - [x] Implement phased client attach paint plus detach cleanup banners
@@ -71,8 +71,8 @@ created: 2026-05-05T04:47:01Z
 
 ## Agent log
 - 2026-05-05T04:48Z Checked out `github.com/hayeah/hootty` into worktree slot 001, read the upstream spec, probed libghostty formatter row output, and wrote `spec.md`.
-- 2026-05-05T04:52Z core attach snapshot phases landed in hootty commit 338c132; go test ./... passes
-- 2026-05-05T04:59Z golden attach harness, README docs, update-goldens test, bare test, and smoke transcript landed in hootty commit 32c1daf
+- 2026-05-05T04:52Z core attach snapshot phases landed in session commit 338c132; go test ./... passes
+- 2026-05-05T04:59Z golden attach harness, README docs, update-goldens test, bare test, and smoke transcript landed in session commit 32c1daf
 
 ## Boss log
 

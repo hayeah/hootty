@@ -34,7 +34,7 @@ func TestHandleAttachRawRoundTrip(t *testing.T) {
 	// Resolve() also reads state.json indirectly via Load(). Write a
 	// minimal one.
 	stateFile := filepath.Join(sessionDir, "state.json")
-	sf := hootty.StateFile{Hootty: hootty.HoottyState{Key: key}}
+	sf := session.StateFile{Session: session.SessionState{Key: key}}
 	if err := writeJSON(stateFile, sf); err != nil {
 		t.Fatalf("write state: %v", err)
 	}
@@ -49,10 +49,10 @@ func TestHandleAttachRawRoundTrip(t *testing.T) {
 		t.Fatalf("listen rpc.sock: %v", err)
 	}
 	defer ln.Close()
-	go runFakeHoottyAttach(t, ln)
+	go runFakeSessionAttach(t, ln)
 
 	// serveState wired up like cmd/serve.go does.
-	srv := &serveState{store: hootty.NewStore(stateDir), stateDir: stateDir}
+	srv := &serveState{store: session.NewStore(stateDir), stateDir: stateDir}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/sessions/{key}/attach-raw", srv.handleAttachRaw)
 	httpSrv := httptest.NewServer(mux)
@@ -95,7 +95,7 @@ func TestHandleAttachRawRoundTrip(t *testing.T) {
 		t.Fatalf("write Input: %v", err)
 	}
 
-	// Read one Output frame; the fake hootty echoes our Input.
+	// Read one Output frame; the fake session echoes our Input.
 	r := bufio.NewReader(conn)
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	typ, payload, err := attachwire.ReadFrame(r)
@@ -114,7 +114,7 @@ func TestHandleAttachRawRoundTrip(t *testing.T) {
 // a 404 rather than upgrading.
 func TestHandleAttachRawNotFound(t *testing.T) {
 	stateDir := shortTempDir(t)
-	srv := &serveState{store: hootty.NewStore(stateDir), stateDir: stateDir}
+	srv := &serveState{store: session.NewStore(stateDir), stateDir: stateDir}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/sessions/{key}/attach-raw", srv.handleAttachRaw)
 	httpSrv := httptest.NewServer(mux)
@@ -143,13 +143,13 @@ func TestHandleAttachRawAmbiguous(t *testing.T) {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
-		sf := hootty.StateFile{Hootty: hootty.HoottyState{Key: key}}
+		sf := session.StateFile{Session: session.SessionState{Key: key}}
 		if err := writeJSON(filepath.Join(dir, "state.json"), sf); err != nil {
 			t.Fatalf("write state: %v", err)
 		}
 	}
 
-	srv := &serveState{store: hootty.NewStore(stateDir), stateDir: stateDir}
+	srv := &serveState{store: session.NewStore(stateDir), stateDir: stateDir}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/sessions/{key}/attach-raw", srv.handleAttachRaw)
 	httpSrv := httptest.NewServer(mux)
@@ -177,12 +177,12 @@ func TestHandleAttachRawAmbiguous(t *testing.T) {
 	}
 }
 
-// runFakeHoottyAttach pretends to be the hootty's
+// runFakeSessionAttach pretends to be the session's
 // /attach handler on a unix socket. It accepts one connection,
 // performs the hoot-attach/1 upgrade, reads the Hello
 // (discards it), and then echoes any Input frame back as an Output
 // frame until EOF.
-func runFakeHoottyAttach(t *testing.T, ln net.Listener) {
+func runFakeSessionAttach(t *testing.T, ln net.Listener) {
 	t.Helper()
 	conn, err := ln.Accept()
 	if err != nil {
@@ -192,11 +192,11 @@ func runFakeHoottyAttach(t *testing.T, ln net.Listener) {
 	bufrw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 	req, err := http.ReadRequest(bufrw.Reader)
 	if err != nil {
-		t.Logf("fake hootty: read req: %v", err)
+		t.Logf("fake session: read req: %v", err)
 		return
 	}
 	if req.Header.Get("Upgrade") != "hoot-attach/1" {
-		t.Errorf("fake hootty: got Upgrade=%q, want hoot-attach/1", req.Header.Get("Upgrade"))
+		t.Errorf("fake session: got Upgrade=%q, want hoot-attach/1", req.Header.Get("Upgrade"))
 		return
 	}
 	resp := "HTTP/1.1 101 Switching Protocols\r\n" +
@@ -215,7 +215,7 @@ func runFakeHoottyAttach(t *testing.T, ln net.Listener) {
 		typ, payload, err := attachwire.ReadFrame(r)
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
-				t.Logf("fake hootty: read frame: %v", err)
+				t.Logf("fake session: read frame: %v", err)
 			}
 			return
 		}

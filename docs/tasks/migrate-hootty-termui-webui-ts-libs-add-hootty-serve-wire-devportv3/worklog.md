@@ -1,13 +1,13 @@
 ---
 status: done
-section: Migrate hootty termui+webui TS libs; add hootty serve; wire devportv3
-slug: migrate-hootty-termui-webui-ts-libs-add-hootty-serve-wire-devportv3
+section: Migrate session termui+webui TS libs; add session serve; wire devportv3
+slug: migrate-hootty-termui-webui-ts-libs-add-session-serve-wire-devportv3
 mode: worktree
 spec: spec.md
 created: 2026-05-02T10:28:13Z
 ---
 
-> ## Migrate hootty termui+webui TS libs; add hootty serve; wire devportv3
+> ## Migrate session termui+webui TS libs; add session serve; wire devportv3
 >
 > ---
 > status:
@@ -16,11 +16,11 @@ created: 2026-05-02T10:28:13Z
 >
 > **Pending the smoke-test-agent-loop section above** — do not start until that lgtm's.
 >
-> Migrate the existing TS libs out of dotfiles into the hootty repo, add a server that powers the example app, and stitch everything together with devportv3.
+> Migrate the existing TS libs out of dotfiles into the session repo, add a server that powers the example app, and stitch everything together with devportv3.
 >
 > Sources to migrate from:
-> - `/Users/me/github.com/hayeah/dotfiles/libs/hayeah-go/hootty/termui` — reusable terminal component
-> - `/Users/me/github.com/hayeah/dotfiles/libs/hayeah-go/hootty/webui` — example app consuming termui
+> - `/Users/me/github.com/hayeah/dotfiles/libs/hayeah-go/session/termui` — reusable terminal component
+> - `/Users/me/github.com/hayeah/dotfiles/libs/hayeah-go/session/webui` — example app consuming termui
 >
 > Targets (in `~/github.com/hayeah/hootty`):
 > - `@hayeah/hootty-termui` — reusable component package
@@ -37,7 +37,7 @@ created: 2026-05-02T10:28:13Z
 > - Pull everything together with `hayeah/devportv3`:
 >   - proxy to vite live dev server (webui)
 >   - proxy to `hoot serve` API
-> - Evidence: use the `/browser` skill to take screenshots of the running webui talking to live hootty sessions.
+> - Evidence: use the `/browser` skill to take screenshots of the running webui talking to live session sessions.
 >
 > - [ ] migrate termui and webui packages, scaffold with vp + /webui conventions
 > - [ ] implement `hoot serve` and verify the webui talks to it
@@ -48,7 +48,7 @@ created: 2026-05-02T10:28:13Z
 
 ### Phase 1 — TS migration (boss-doc box: migrate termui and webui packages)
 
-- [x] pnpm workspace at hootty repo root (package.json, pnpm-workspace.yaml, .gitignore) — 29a222b
+- [x] pnpm workspace at session repo root (package.json, pnpm-workspace.yaml, .gitignore) — 29a222b
 - [x] copy termui → packages/hootty-termui, rename to @hayeah/hootty-termui, build green — 3f6ca29
 - [x] copy webui → packages/hootty-webui, rename, fix workspace dep + 3 imports, build green — e38da7d
 - [x] vite dev /preview smoke (mock data source) renders before any backend — tmp/preview-smoke.png
@@ -57,7 +57,7 @@ created: 2026-05-02T10:28:13Z
 
 - [x] go.mod: add github.com/coder/websocket — c646793
 - [x] cmd/hoot/serve.go — flags, mux, GET /sessions, GET/DELETE /sessions/{key}, /healthz — 21bf44b
-- [x] cmd/hoot/serve_spawn.go — POST /sessions (splitCmd + spawnHoot), closeSession — 2a93db2
+- [x] cmd/hoot/serve_spawn.go — POST /sessions (splitCmd + spawnSession), closeSession — 2a93db2
 - [x] cmd/hoot/serve_bridge.go — handleAttach (WS↔attachwire), handleEvents (SSE proxy) — 47b9ec5
 - [x] wire serve subcommand into main.go switch + usage() — 47b9ec5
 - [x] curl/websocat smoke against a live hoot run — tmp/serve-smoke-transcript.txt
@@ -67,11 +67,11 @@ created: 2026-05-02T10:28:13Z
 - [x] devport.toml composing vite + hoot serve under one proxy — 3a0e72b
 - [x] devport up → healthy stack
 - [x] browser screenshot of dashboard with live session + PTY output, saved under tmp/ — tmp/dashboard-attached.png
-- [x] update hootty/README.md with serve + devport pointer — 3a0e72b
+- [x] update session/README.md with serve + devport pointer — 3a0e72b
 
 ## Agent log
 - 2026-05-02T10:28Z blocked: section text says 'Pending the smoke-test-agent-loop section above — do not start until that lgtm's.' Standing down until that prerequisite section is merged. Re-nudge me when it's cleared.
-- 2026-05-02T10:33Z unblocked. wrote spec.md, seeded 13 todos across 3 phases. hootty worktree leased at slot 000. starting phase 1 (TS migration).
+- 2026-05-02T10:33Z unblocked. wrote spec.md, seeded 13 todos across 3 phases. session worktree leased at slot 000. starting phase 1 (TS migration).
 - 2026-05-02T10:33Z phase 1.1 done — pnpm workspace scaffold landed (29a222b)
 - 2026-05-02T10:38Z phase 1 complete — termui (3f6ca29) + webui (e38da7d) ported, /preview screenshot captured (tmp/preview-smoke.png) showing sessions sidebar + terminal pane against MockDataSource. starting phase 2 (hoot serve).
 - 2026-05-02T10:44Z phase 2 complete — hoot serve landed across 4 commits (c646793 21bf44b 2a93db2 47b9ec5); GET/POST/DELETE /sessions and WS /attach all proved against a live hoot run; transcript at tmp/serve-smoke-transcript.txt. starting phase 3 (devport.toml + browser screenshot).
@@ -118,7 +118,7 @@ End-to-end smoke transcript at [`tmp/serve-smoke-transcript.txt`](tmp/serve-smok
 - `GET /api/healthz` → 200 `{"ok":true,...}`
 - `GET /api/sessions` returns the live `sm1` session plus the just-deleted `api1` (with `alive:false`, `state:"exited"`) — proving list reflects flock state.
 - `POST /api/sessions {cmd:"sh -c \"echo from-api && sleep 30\"", key:"api2"}` → 201 with full StateFile + `socket_path` — session survives, `state:"running"`, real pid.
-- `DELETE /api/sessions/api2` → 204; subsequent list shows it gone (the hootty exited cleanly).
+- `DELETE /api/sessions/api2` → 204; subsequent list shows it gone (the session exited cleanly).
 - `WS /api/sessions/sm1/attach` (Python `websockets` smoke client) — after sending the resize text frame and `b"ls /tmp\n"` binary input, the bridge replays `hello world` (the bash one-shot's previous stdout, delivered via upstream `MsgOutput` → WS binary frame) and echoes the typed `ls /tmp` (input flowed through WS binary → upstream `MsgInput` → PTY echo back). Both pumps verified.
 
 Commits: c646793 (deps) · 21bf44b (serve.go) · 2a93db2 (serve_spawn.go) · 47b9ec5 (serve_bridge.go + main.go wiring).

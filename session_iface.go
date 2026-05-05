@@ -1,8 +1,8 @@
-package hootty
+package session
 
 import "net/http"
 
-// Hootty is the affordance surface a Service sees at runtime.
+// Session is the affordance surface a Service sees at runtime.
 //
 // A value implementing this interface is passed to Service.Run as
 // its second argument; it lives only for the duration of that call.
@@ -15,7 +15,7 @@ import "net/http"
 //     state.json and fan out to SSE subscribers on /events. This is
 //     how Services tell the outside world what they're doing.
 //
-//   - PTY: the *LibghosttyPTY configured at Hootty construction
+//   - PTY: the *LibghosttyPTY configured at Session construction
 //     time. Services use it to capture the screen / write raw bytes
 //     into the master.
 //
@@ -31,7 +31,7 @@ import "net/http"
 // something every Service needs that a library-owned goroutine is
 // uniquely positioned to provide? If yes, add it; if no, it belongs
 // on the Service or on a concrete helper.
-type Hootty interface {
+type Session interface {
 	// UpdateState atomically rewrites state.json's `state` section
 	// and fans out to /events SSE subscribers.
 	UpdateState(state any) error

@@ -26,7 +26,7 @@ created: 2026-05-02T09:10:49Z
 > - new CLI: `hoot attach [--state-dir D] [--no-full-replay] [--prefix-key K] <id-or-prefix>`
 > - prefix-resolves the session id (3-char min, ambiguity errors out — same as `hoot resolve`)
 > - single rpc.sock connection upgraded into a small TLV binary protocol (`Hello` / `Input` / `Output` / `Size`)
-> - new file layout per spec: `cmd/hoot/attach.go`, `internal/attachwire/wire.go`, `hootty/attach.go`, `hootty/attach_handler.go`
+> - new file layout per spec: `cmd/hoot/attach.go`, `internal/attachwire/wire.go`, `session/attach.go`, `session/attach_handler.go`
 > - multi-attach winsize: smallest cols/rows wins; recompute on connect / disconnect / C→S Size; broadcast S→C Size on change
 > - initial replay: full replay (default) streams `pty.log` then cuts over to live without dropping bytes; `--no-full-replay` sends a libghostty snapshot first
 > - prefix-key state machine on stdin (default `C-b`): `<prefix>d` detach, `<prefix>?` help, `<prefix><prefix>` literal; reject printable prefix bytes at flag-parse time
@@ -39,8 +39,8 @@ created: 2026-05-02T09:10:49Z
 - [x] add `Recorder.Size()` and `Recorder.Path()` so attach can offset-replay pty.log race-free
 - [x] add `LibghosttyPTY.SubscribeAtRecord()` (atomic subscribe + recorder offset)
 - [x] write `internal/attachwire/wire.go` — TLV framing + Hello/Size structs, prefix-key parsing
-- [x] write `hootty/attach.go` — AttachSet (min-wins winsize negotiation)
-- [x] write `hootty/attach_handler.go` — HTTP upgrade → binary protocol on `/attach`, replay+live cutover
+- [x] write `session/attach.go` — AttachSet (min-wins winsize negotiation)
+- [x] write `session/attach_handler.go` — HTTP upgrade → binary protocol on `/attach`, replay+live cutover
 - [x] register `/attach` route in PTY's RegisterRoutes
 - [x] write `cmd/hoot/attach.go` — client CLI w/ raw termios, prefix-key state machine, SIGWINCH coalescer, exit codes
 - [x] wire `attach` into `cmd/hoot/main.go` usage + dispatch
@@ -166,7 +166,7 @@ Visible in the full-replay run above: `kill -INT $PID` → `exit=130`. SIGTERM a
 ## Trouble report
 
 - **Stdin EOF was wrongly treated as detach** in the first iteration. Caught immediately during the first scripted e2e run (output was 0 bytes because `< /dev/null` EOF'd stdin, the loop exited, teardown ran before any Output frame arrived). Fixed by removing stdin EOF from the detach select. Per spec the only detach triggers are server EOF / ctx cancel / `<prefix>d`. Fixed in commit f0c19a2.
-- **`internal/attachwire` is import-restricted** to the hootty module. The standalone test driver under `tmp/attach_driver.go` had to inline the framing (≤30 lines). Acceptable; the driver is throwaway test glue.
+- **`internal/attachwire` is import-restricted** to the session module. The standalone test driver under `tmp/attach_driver.go` had to inline the framing (≤30 lines). Acceptable; the driver is throwaway test glue.
 - **gopls workspace warnings** during all edits — every file flagged as "not in workspace" — because the worktree isn't in the global go.work. The actual `go build ./...` and `go test ./...` are clean. Ignored.
 - **#friction** macOS has no `timeout` / `gtimeout` by default. Used backgrounded shell + `sleep N; kill -INT $pid` instead.
 - **#friction** the snapshot-mode boundary is approximate by design (libghostty trims trailing whitespace on `FormatVT`). The spec acknowledges this; full-replay is the byte-identical mode and works.

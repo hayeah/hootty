@@ -35,13 +35,13 @@ func (s *RunCmdService) cmdString() string {
 	return strings.Join(parts, " ")
 }
 
-// Run implements hootty.Service. Stdin/Stdout/Stderr are
-// inherited from the hootty — already on the PTY slave. Setctty
+// Run implements session.Service. Stdin/Stdout/Stderr are
+// inherited from the session — already on the PTY slave. Setctty
 // on the child is what lets master-side TIOCSWINSZ keep working
 // after the child's job-control configures the fg pgrp; without
 // it macOS surfaces EIO on the master ioctl as soon as the shell
 // runs tcsetpgrp.
-func (s *RunCmdService) Run(ctx context.Context, super hootty.Hootty) error {
+func (s *RunCmdService) Run(ctx context.Context, super session.Session) error {
 	if s.Cmd == "" {
 		return errors.New("RunCmdService: Cmd is required")
 	}

@@ -1,4 +1,4 @@
-package hootty
+package session
 
 import (
 	"encoding/json"
@@ -56,13 +56,13 @@ func (s *Store) List() ([]*StateFile, error) {
 		states = append(states, state)
 	}
 	sort.Slice(states, func(i, j int) bool {
-		return states[i].Hootty.CreatedAt.Before(states[j].Hootty.CreatedAt)
+		return states[i].Session.CreatedAt.Before(states[j].Session.CreatedAt)
 	})
 	return states, nil
 }
 
 // IsAlive probes the directory flock for the given key.
-// Returns true if a hootty currently holds the lock.
+// Returns true if a session currently holds the lock.
 func (s *Store) IsAlive(key string) bool {
 	return ProbeFlock(filepath.Join(s.Dir, key))
 }
@@ -136,7 +136,7 @@ func (w *Writer) Update(fn func(*StateFile)) error {
 
 // UpdateState marshals the provided value into the "state" section
 // of state.json. This is the method Services call (directly or
-// through Hootty.UpdateState, which additionally publishes to
+// through Session.UpdateState, which additionally publishes to
 // /events subscribers).
 func (w *Writer) UpdateState(state any) error {
 	return w.Update(func(s *StateFile) {

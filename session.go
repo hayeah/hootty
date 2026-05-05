@@ -1,4 +1,4 @@
-package hootty
+package session
 
 import (
 	"context"
@@ -22,7 +22,7 @@ import (
 // (common in tests) could interleave their chdirs.
 var chdirMu sync.Mutex
 
-// HoottyConfig configures a Runner. Four fields, no more:
+// SessionConfig configures a Runner. Four fields, no more:
 //   - StateDir: the base directory (e.g. ~/.agentboss or .devport).
 //   - Key: the session id inside StateDir. The runner owns
 //     <StateDir>/<Key>/.
@@ -33,17 +33,17 @@ var chdirMu sync.Mutex
 //
 // Everything else (restart policy, briefing replay, signal-specific
 // cleanup) is the Service's business.
-type HoottyConfig struct {
+type SessionConfig struct {
 	StateDir string
 	Key      string
 	Service  Service
 	PTY      *LibghosttyPTY
 }
 
-// Runner is the concrete hootty entry point. Implements the
-// Hootty interface that Service.Run receives.
+// Runner is the concrete session entry point. Implements the
+// Session interface that Service.Run receives.
 type Runner struct {
-	cfg    HoottyConfig
+	cfg    SessionConfig
 	writer *Writer
 	mux    *http.ServeMux
 	bus    *eventBus
@@ -53,21 +53,21 @@ type Runner struct {
 // New creates a Runner from the given config. The Runner is not
 // useful until you call Run (which acquires the flock, opens the
 // socket, and starts the Service).
-func New(cfg HoottyConfig) *Runner {
+func New(cfg SessionConfig) *Runner {
 	return &Runner{
 		cfg: cfg,
 		mux: http.NewServeMux(),
 		bus: newEventBus(),
-		log: slog.Default().With("hootty", cfg.Key),
+		log: slog.Default().With("session", cfg.Key),
 	}
 }
 
-// UpdateState implements Hootty. Atomically rewrites the `state`
+// UpdateState implements Session. Atomically rewrites the `state`
 // section of state.json and publishes a "state" event to /events
 // subscribers.
 func (r *Runner) UpdateState(state any) error {
 	if r.writer == nil {
-		return errors.New("hootty: UpdateState called before Run")
+		return errors.New("session: UpdateState called before Run")
 	}
 	if err := r.writer.UpdateState(state); err != nil {
 		return err
@@ -79,18 +79,18 @@ func (r *Runner) UpdateState(state any) error {
 	return nil
 }
 
-// PTY implements Hootty. Returns the terminal transport chosen
+// PTY implements Session. Returns the terminal transport chosen
 // at construction time.
 func (r *Runner) PTY() *LibghosttyPTY { return r.cfg.PTY }
 
-// Mux implements Hootty. The library registers default handlers
+// Mux implements Session. The library registers default handlers
 // on it (/state, /events); Services may add more during Run.
 func (r *Runner) Mux() *http.ServeMux { return r.mux }
 
-// Run is the entire hootty loop. It:
-//  1. Acquires the directory flock (fails if another hootty owns
+// Run is the entire session loop. It:
+//  1. Acquires the directory flock (fails if another session owns
 //     the key).
-//  2. Writes the initial state.json with the hootty's own PID
+//  2. Writes the initial state.json with the session's own PID
 //     (so external killers can find us).
 //  3. Registers default routes on the mux (/state, /events).
 //  4. Opens <StateDir>/<Key>/rpc.sock and serves the mux.
@@ -103,18 +103,18 @@ func (r *Runner) Mux() *http.ServeMux { return r.mux }
 // library does not orchestrate any of that.
 func (r *Runner) Run(ctx context.Context) error {
 	if r.cfg.Service == nil {
-		return errors.New("hootty: Service is required")
+		return errors.New("session: Service is required")
 	}
 	if r.cfg.PTY == nil {
-		return errors.New("hootty: PTY is required")
+		return errors.New("session: PTY is required")
 	}
 	if r.cfg.StateDir == "" || r.cfg.Key == "" {
-		return errors.New("hootty: StateDir and Key are required")
+		return errors.New("session: StateDir and Key are required")
 	}
 
 	stateDir := filepath.Join(r.cfg.StateDir, r.cfg.Key)
 	initial := StateFile{
-		Hootty: HoottyState{
+		Session: SessionState{
 			Key:       r.cfg.Key,
 			PID:       os.Getpid(),
 			CreatedAt: time.Now(),

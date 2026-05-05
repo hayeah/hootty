@@ -14,7 +14,7 @@ Replace the raw PTY byte log with an asciicast v2 JSONL recording that external 
   - Add `RecordResize(cols, rows uint16)` writing `[t, "r", "COLSxROWS"]`.
   - Do not record input events for now; the attach client only sends input to the PTY master, and recording user input would need a privacy decision plus different placement than the output tee.
   - Add a small reader for playback events that returns bounded output events from the cast file.
-- `cmd/hoot/hoot.go`
+- `cmd/hoot/session.go`
   - Create `pty.cast` instead of `pty.log`.
   - Pass initial cols/rows and the managed command string into the recorder header.
 - `pty_libghostty.go`
@@ -53,7 +53,7 @@ Replace the raw PTY byte log with an asciicast v2 JSONL recording that external 
 
 - Remove `Recorder.Size` and the `SubscribeAtRecord` offset return; update tests and comments.
 - Implement asciicast v2 recorder output and resize events.
-- Switch internal hootty state file from `pty.log` to `pty.cast`.
+- Switch internal session state file from `pty.log` to `pty.cast`.
 - Add cast playback reader and attach-handler playback streaming.
 - Add attach CLI flags and Hello fields, with first-connect-only reconnect behavior.
 - Update README and focused tests.

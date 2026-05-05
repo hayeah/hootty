@@ -54,11 +54,11 @@ func TestAttachGoldenSnapshots(t *testing.T) {
 	})
 
 	t.Run("asciicast playback follows visible screen phase", func(t *testing.T) {
-		rec, err := hootty.NewRecorder(filepath.Join(t.TempDir(), "pty.cast"), 40, 8)
+		rec, err := session.NewRecorder(filepath.Join(t.TempDir(), "pty.cast"), 40, 8)
 		if err != nil {
 			t.Fatalf("NewRecorder: %v", err)
 		}
-		remote := attachetest.NewRemoteWithOptions(t, 40, 8, hootty.WithRecorder(rec))
+		remote := attachetest.NewRemoteWithOptions(t, 40, 8, session.WithRecorder(rec))
 		local := attachetest.NewLocalTerminal(t, 40, 8)
 		remote.WriteAndWait(t, []byte("playback-a\r\nplayback-b\r\n\x1b[H\x1b[2Jscreen-now"), "screen-now")
 

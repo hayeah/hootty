@@ -127,15 +127,15 @@ retries forever. Press any key to wake the backoff and retry now.
 		reconnect = !*noReconnect
 		label = attachLabel{Session: rest[0], Host: *host}
 	} else {
-		store := hootty.NewStore(*stateDir)
+		store := session.NewStore(*stateDir)
 		state, err := store.Resolve(rest[0])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "hoot attach: %v\n", err)
 			return 2
 		}
-		sockPath := filepath.Join(*stateDir, state.Hootty.Key, "rpc.sock")
+		sockPath := filepath.Join(*stateDir, state.Session.Key, "rpc.sock")
 		dial = localDialer(sockPath)
-		label = attachLabel{Session: state.Hootty.Key, Host: "local"}
+		label = attachLabel{Session: state.Session.Key, Host: "local"}
 	}
 
 	exitCode, err := runAttachLoop(dial, prefixByte, reconnect, label, playback)
@@ -463,7 +463,7 @@ func runSession(
 	// decides per the reconnect flag (mid-stream bridge death looks
 	// like EOF on the TCP side, but in reconnect=false mode we still
 	// want to treat it as a clean detach for backwards compat with
-	// the local-socket path's "child exited → hootty closed" semantics).
+	// the local-socket path's "child exited → session closed" semantics).
 	return sessErr
 }
 

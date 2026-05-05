@@ -20,7 +20,7 @@ const scripts: Record<string, string[]> = {
     "\x1b[?1049h\x1b[?1h\x1b=\x1b[H\x1b[2J",
     "\x1b[1;1H  1 \x1b[38;5;176m# ptydemo\x1b[0m\r\n",
     "\x1b[2;1H  2 \r\n",
-    "\x1b[3;1H  3 A bounded demo of the hootty library.\r\n",
+    "\x1b[3;1H  3 A bounded demo of the session library.\r\n",
     "\x1b[4;1H  4 \r\n",
     "\x1b[5;1H  5 ## Usage\r\n",
     "\x1b[6;1H  6 \r\n",

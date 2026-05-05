@@ -67,7 +67,7 @@ created: 2026-05-05T04:36:06Z
 
 - [x] Remove `Recorder.Size` and the `SubscribeAtRecord` offset return
 - [x] Implement asciicast v2 recorder output and resize events
-- [x] Switch hootty sessions from `pty.log` to `pty.cast`
+- [x] Switch session sessions from `pty.log` to `pty.cast`
 - [x] Add cast playback reader and attach-handler playback streaming
 - [x] Add attach CLI flags and `Hello` playback fields
 - [x] Update README and focused tests
@@ -81,12 +81,12 @@ created: 2026-05-05T04:36:06Z
 
 ## Agent log
 - 2026-05-05T04:42:13Z — Checked out `github.com/hayeah/hootty` into worktree slot `000`, inspected recorder/attach/CLI surfaces, and wrote `spec.md` with concrete playback defaults and wire-shape decisions.
-- 2026-05-05T04:43Z Dropped recorder offset API in hootty commit 45a70a2; go test ./... passes.
-- 2026-05-05T04:46Z Recorded PTY output as asciicast in hootty commit 40c3f1d; go test ./... passes.
-- 2026-05-05T04:49Z Added attach asciicast playback and flags in hootty commit e31fe34; go test ./... passes.
-- 2026-05-05T04:50Z Updated README and CLI docs for pty.cast/playback in hootty commit 47ea618; go test ./... passes.
+- 2026-05-05T04:43Z Dropped recorder offset API in session commit 45a70a2; go test ./... passes.
+- 2026-05-05T04:46Z Recorded PTY output as asciicast in session commit 40c3f1d; go test ./... passes.
+- 2026-05-05T04:49Z Added attach asciicast playback and flags in session commit e31fe34; go test ./... passes.
+- 2026-05-05T04:50Z Updated README and CLI docs for pty.cast/playback in session commit 47ea618; go test ./... passes.
 - 2026-05-05T04:50Z Full automated verification passed: go test ./...
-- 2026-05-05T04:54Z E2E tmux playback exposed CSI ? 996 n; fixed stripper in hootty commit 7656d34 and recorded the design note.
+- 2026-05-05T04:54Z E2E tmux playback exposed CSI ? 996 n; fixed stripper in session commit 7656d34 and recorded the design note.
 - 2026-05-05T04:56Z Done: implementation committed through 7656d34; worklog evidence covers go test, asciinema play, playback/no-playback attach, and tmux query-strip playback.
 - 2026-05-05T05:12Z Rebased on master phased snapshot protocol preserving master features. Playback now runs after `MsgSnapshotScreen` and before live `MsgOutput`; added raw attach golden coverage in `c7db7d9`; refreshed tests and e2e evidence.
 - 2026-05-05T05:15Z Done after rebase: preserved master phased snapshot/golden harness, added playback raw golden c7db7d9, refreshed tests/e2e, and set status back to done.
@@ -95,7 +95,7 @@ created: 2026-05-05T04:36:06Z
 - 2026-05-05T05:05Z rebase conflict on master during lgtm. aborted — worktree is clean.
   
   textual conflict in: pty_libghostty_test.go (UU)
-  auto-merged (no conflict): cmd/hoot/main.go, cmd/hoot/hoot.go, pty_libghostty.go, recorder.go, recorder_test.go (A)
+  auto-merged (no conflict): cmd/hoot/main.go, cmd/hoot/session.go, pty_libghostty.go, recorder.go, recorder_test.go (A)
   
   commits that landed on master since you branched:
   

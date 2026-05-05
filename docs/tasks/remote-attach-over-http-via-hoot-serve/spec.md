@@ -66,7 +66,7 @@ Why a separate route from the existing `/attach`:
 
 ### Short-id resolution
 
-The server already owns `hootty.Store.Resolve` (handles exact-match + unique-prefix + ambiguous + missing). The client passes its raw user-typed argument straight through as the `{key}` path segment, and the bridge resolves on the server side.
+The server already owns `session.Store.Resolve` (handles exact-match + unique-prefix + ambiguous + missing). The client passes its raw user-typed argument straight through as the `{key}` path segment, and the bridge resolves on the server side.
 
 Wire shape on the new attach-raw route:
 
@@ -135,13 +135,13 @@ Behaviors per state:
 
 - **connecting** (first attempt only). Failure → exit 1 with the dial error printed verbatim. No retry on first connect — if the user typo'd the host, fail loudly. (See Open questions: should this also retry?)
 - **connected**. Run the existing stdin-pump / server-pump goroutines. Normal server EOF → exit 0 (clean detach). Any other read/write error → transition to **reconnecting**.
-- **reconnecting**. Termios stays in raw mode (we never restore between drops — restoring + re-raw would flicker and might race with the user's keystrokes). Backoff schedule: `1s, 2s, 4s, 8s, 16s, 30s, 30s, …`, capped at 30s. **No total cap — retry forever.** The user owns the lifecycle; only `<prefix>d` / SIGINT / SIGTERM ends a hung attach. Rationale: cover overnight-laptop and other long-outage scenarios where the hootty outlives the network blip. On each retry tick, try the WS dial; on success, send a fresh Hello with current local cols/rows + the original `replay_mode`, transition to **connected**.
+- **reconnecting**. Termios stays in raw mode (we never restore between drops — restoring + re-raw would flicker and might race with the user's keystrokes). Backoff schedule: `1s, 2s, 4s, 8s, 16s, 30s, 30s, …`, capped at 30s. **No total cap — retry forever.** The user owns the lifecycle; only `<prefix>d` / SIGINT / SIGTERM ends a hung attach. Rationale: cover overnight-laptop and other long-outage scenarios where the session outlives the network blip. On each retry tick, try the WS dial; on success, send a fresh Hello with current local cols/rows + the original `replay_mode`, transition to **connected**.
 - **Keystroke wakes the backoff.** While in **reconnecting**, any byte read from stdin (other than a `<prefix>` sequence) cancels the current sleep and triggers an immediate redial attempt. Failed redial returns to the next backoff tier as if the timer had elapsed. This means "wiggle a key when you wake your laptop" reconnects instantly instead of waiting up to 30s for the next tick. The keystroke itself is **not** sent to the remote (consistent with the "drop input during reconnect" rule) — it's purely a wake signal.
 
 Replay on reconnect:
 
-- **Default (`--full-replay`, the existing default)**: every reconnect issues `Hello{replay_mode:"full"}`. The hootty streams the full pty.log again, repainting the screen — this is what makes the status-line hack work without a dedicated reserved row (see Status line below). This is the recommended mode for ssh-style sessions.
-- **`--no-full-replay`**: every reconnect issues `Hello{replay_mode:"snapshot"}`. The hootty sends a libghostty snapshot then streams. Faster on long-running sessions with huge pty.logs, but the disconnect line stays visible until the snapshot paint overwrites that row (mostly fine — alt-screen apps repaint everything).
+- **Default (`--full-replay`, the existing default)**: every reconnect issues `Hello{replay_mode:"full"}`. The session streams the full pty.log again, repainting the screen — this is what makes the status-line hack work without a dedicated reserved row (see Status line below). This is the recommended mode for ssh-style sessions.
+- **`--no-full-replay`**: every reconnect issues `Hello{replay_mode:"snapshot"}`. The session sends a libghostty snapshot then streams. Faster on long-running sessions with huge pty.logs, but the disconnect line stays visible until the snapshot paint overwrites that row (mostly fine — alt-screen apps repaint everything).
 
 ### Status line for connection state
 
@@ -232,7 +232,7 @@ The prefix-key FSM (`stateNormal` ↔ `stateAfterPref`) lives in the stdin pump.
 - 2026-05-02T11:14Z — Two routes (`/attach` browser-friendly, `/attach-raw` pass-through) over one stateful route. The browser bridge has to translate JSON `{type:"resize"}` → `MsgSize`; the CLI sends `MsgSize` already. Branching on "did the first frame look like a Hello?" makes the bridge a partial parser of its own payloads. A new route is one method on `serveState`, ~30 lines, and the wire contract for each route is one sentence. Not worth saving the URL.
 - 2026-05-02T11:15Z — Drop input-frames during reconnect rather than buffer. Buffering means the user types `vi notes.txt<Enter>` during a 4-second outage and that sequence replays *after* full-replay repaints the original screen state — the buffered keystrokes hit the wrong UI. Dropping is honest: the user sees the disconnect line, knows their typing is lost, retries. A future `--input-buffer` flag could opt in to buffering for low-stakes shell sessions.
 - 2026-05-02T11:40Z — Reconnect retries forever (no time cap), and any non-prefix keystroke during reconnecting wakes the backoff sleep for an immediate redial. Human-driven feedback. Reasons:
-  - Primary use case is overnight-laptop / multi-hour outages where the hootty outlives the network blip. A 5-min cap defeats that.
+  - Primary use case is overnight-laptop / multi-hour outages where the session outlives the network blip. A 5-min cap defeats that.
   - The user already has a clean exit (`<prefix>d` or SIGINT/SIGTERM) — there's no scenario where they're "stuck attached forever" without an out.
   - Keystroke-wake makes the post-resume latency feel instant: instead of waiting up to 30s for the next backoff tick, wiggle a key and the redial fires immediately.
   - The wake byte is *not* forwarded to the remote — same "drop input during reconnect" rule. It's a control signal, not data.
@@ -257,7 +257,7 @@ The prefix-key FSM (`stateNormal` ↔ `stateAfterPref`) lives in the stdin pump.
 - 2026-05-02T11:50Z — Short-id resolved **server-side**: the bridge calls `store.Resolve({key})` on the path param, treating it as either a full key or a unique prefix. Human-driven feedback. Reasons:
   - `Resolve` already exists and handles all the edge cases (exact, unique-prefix, ambiguous, missing). The earlier client-side scheme would have duplicated those rules in Go just to call them over an extra round-trip.
   - One round-trip instead of two on first connect.
-  - Single source of truth for the resolution rules — they can change in one place (`hootty.Store.Resolve`) and both the local CLI and the remote CLI follow.
+  - Single source of truth for the resolution rules — they can change in one place (`session.Store.Resolve`) and both the local CLI and the remote CLI follow.
   - On reconnect, the client keeps the *prefix string* and re-resolves each attempt. A session restart with the same key is followed transparently; a session deletion surfaces as `404` and exits 2.
   - Information disclosure: resolve-by-prefix doesn't enumerate other sessions, unlike `GET /sessions`. Better default on a shared `serve` host.
   - Status mapping: bridge returns `404` for no-match, `409` for ambiguous (body lists candidates). Client maps both to its existing exit-2 path.

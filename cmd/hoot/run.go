@@ -17,13 +17,13 @@ import (
 	"github.com/hayeah/hootty/internal/shortid"
 )
 
-// cmdRun opens a PTY pair, forks `hoot __hoot` with the
-// slave as stdio and the master on fd 3, then exits — the hootty
+// cmdRun opens a PTY pair, forks `hoot __session` with the
+// slave as stdio and the master on fd 3, then exits — the session
 // process keeps running in its own session and serves rpc.sock.
 //
-// `hoot run` is intentionally fire-and-forget: the hootty
+// `hoot run` is intentionally fire-and-forget: the session
 // holds the flock and the unix socket; clients (a future `attach`
-// CLI, curl, an embedding HTTP server) talk to the hootty
+// CLI, curl, an embedding HTTP server) talk to the session
 // through rpc.sock.
 func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
@@ -37,7 +37,7 @@ func cmdRun(args []string) error {
 		return errors.New("run: missing command after --")
 	}
 
-	store := hootty.NewStore(*stateDir)
+	store := session.NewStore(*stateDir)
 	if *key == "" {
 		generated, err := generateKey(store)
 		if err != nil {
@@ -76,7 +76,7 @@ func cmdRun(args []string) error {
 		return fmt.Errorf("os.Executable: %w", err)
 	}
 	hootArgs := []string{
-		"__hoot",
+		"__session",
 		"--state-dir", *stateDir,
 		"--key", *key,
 		"--",
@@ -88,27 +88,27 @@ func cmdRun(args []string) error {
 	cmd.Stdout = slave
 	cmd.Stderr = slave
 	cmd.ExtraFiles = []*os.File{master}
-	// Hootty runs in its own session (Setsid). The Service
+	// Session runs in its own session (Setsid). The Service
 	// inside will Setctty to claim the slave; keeping the
-	// hootty session-less for this tty is what lets master-side
+	// session session-less for this tty is what lets master-side
 	// TIOCSWINSZ keep working after the child takes the fg pgrp.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := cmd.Start(); err != nil {
 		master.Close()
 		slave.Close()
-		return fmt.Errorf("fork hootty: %w", err)
+		return fmt.Errorf("fork session: %w", err)
 	}
 
 	// Parent is done with both ends — child has its own dups.
 	_ = slave.Close()
 	_ = master.Close()
 
-	// Wait for the hootty to open its socket so we can promise
+	// Wait for the session to open its socket so we can promise
 	// the caller a usable session before returning.
 	sockPath := filepath.Join(*stateDir, *key, "rpc.sock")
 	if err := waitForSocket(sockPath, 3*time.Second); err != nil {
-		return fmt.Errorf("run: hootty did not open socket: %w", err)
+		return fmt.Errorf("run: session did not open socket: %w", err)
 	}
 
 	fmt.Fprintf(os.Stderr, "hoot: session %q started (state-dir=%s)\n", *key, *stateDir)
@@ -119,14 +119,14 @@ func cmdRun(args []string) error {
 
 // generateKey returns a random short id that doesn't collide with
 // any existing session directory under the store's state dir.
-func generateKey(store *hootty.Store) (string, error) {
+func generateKey(store *session.Store) (string, error) {
 	existing := map[string]bool{}
 	states, err := store.List()
 	if err != nil {
 		return "", err
 	}
 	for _, st := range states {
-		existing[st.Hootty.Key] = true
+		existing[st.Session.Key] = true
 	}
 	return shortid.Generate(existing)
 }

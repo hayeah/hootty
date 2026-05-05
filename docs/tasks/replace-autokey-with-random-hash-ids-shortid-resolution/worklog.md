@@ -16,7 +16,7 @@ created: 2026-05-02T08:18:15Z
 >
 > In `~/github.com/hayeah/hootty`, drop the `autoKey` scheme. Sessions should get random hash ids instead — short, opaque, no semantic structure. Then add shortid resolution so callers (and the `hoot` CLI) can refer to a session by any unique prefix of its full id.
 >
-> Vendor the shortid logic from `/Users/me/github.com/hayeah/dotfiles/libs/hayeah-go/shortid/shortid.go` directly into the hootty repo (e.g. under `internal/shortid/` or a similar package). Copy the file verbatim, adjust the package path, keep tests if they exist alongside it. No external dependency on the dotfiles repo.
+> Vendor the shortid logic from `/Users/me/github.com/hayeah/dotfiles/libs/hayeah-go/shortid/shortid.go` directly into the session repo (e.g. under `internal/shortid/` or a similar package). Copy the file verbatim, adjust the package path, keep tests if they exist alongside it. No external dependency on the dotfiles repo.
 >
 > Wire it up:
 > - new sessions: generate the full hash id, store it
@@ -52,7 +52,7 @@ ok  	github.com/hayeah/hootty/internal/shortid	0.314s
 
 `internal/shortid` runs the full test suite vendored verbatim from
 dotfiles (Generate alphabet/uniqueness, Resolve happy paths, all three
-error types). `hootty` package adds `TestStoreResolveErrors` which
+error types). `session` package adds `TestStoreResolveErrors` which
 exercises `IDTooShortError`, `AmbiguousIDError`, `IDNotFoundError`
 through `Store.Resolve`.
 

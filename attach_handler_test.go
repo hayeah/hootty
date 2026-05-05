@@ -1,4 +1,4 @@
-package hootty
+package session
 
 import (
 	"path/filepath"

@@ -3,7 +3,7 @@
 // both directions, plus a resize signal toward the backend.
 //
 // The default implementation (WebSocketAttach) speaks the
-// hootty's wire format (binary WS frames = PTY bytes,
+// session's wire format (binary WS frames = PTY bytes,
 // {type:"resize"} JSON text frames), but anything that conforms
 // to this interface plugs in — mock streams for tests, alternative
 // transports, etc.

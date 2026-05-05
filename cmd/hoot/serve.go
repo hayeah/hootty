@@ -14,7 +14,7 @@ import (
 // cmdServe is the API-only HTTP server that powers the example webui.
 //
 // It is a fan-out / multiplexer over a state-dir of managed
-// sessions: each session has its own rpc.sock running the hootty
+// sessions: each session has its own rpc.sock running the session
 // library's mux (/state, /events, /attach, /pty/*), and `serve`
 // exposes a session-keyed HTTP+WS surface on top of it.
 //
@@ -24,7 +24,7 @@ import (
 //	GET    /sessions                  list { sessions: [{...StateFile, alive}] }
 //	POST   /sessions                  spawn (body: {cmd?, argv?, key?})
 //	GET    /sessions/{key}            state.json (alias of /state)
-//	DELETE /sessions/{key}            SIGTERM the hootty by pid
+//	DELETE /sessions/{key}            SIGTERM the session by pid
 //	GET    /sessions/{key}/state      state.json
 //	GET    /sessions/{key}/events     SSE proxy of upstream /events
 //	GET    /sessions/{key}/attach     WebSocket bridge to upstream /attach
@@ -45,7 +45,7 @@ func cmdServe(args []string) error {
 		return fmt.Errorf("mkdir state-dir: %w", err)
 	}
 
-	store := hootty.NewStore(*stateDir)
+	store := session.NewStore(*stateDir)
 	srv := &serveState{store: store, stateDir: *stateDir}
 
 	mux := http.NewServeMux()
@@ -73,7 +73,7 @@ func register(mux *http.ServeMux, prefix, path string, h http.HandlerFunc) {
 }
 
 type serveState struct {
-	store    *hootty.Store
+	store    *session.Store
 	stateDir string
 }
 
@@ -98,7 +98,7 @@ func (s *serveState) getSessions(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	type entry struct {
-		*hootty.StateFile
+		*session.StateFile
 		Alive bool `json:"alive"`
 	}
 	out := struct {
@@ -107,7 +107,7 @@ func (s *serveState) getSessions(w http.ResponseWriter, _ *http.Request) {
 	for _, st := range states {
 		out.Sessions = append(out.Sessions, entry{
 			StateFile: st,
-			Alive:     s.store.IsAlive(st.Hootty.Key),
+			Alive:     s.store.IsAlive(st.Session.Key),
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")

@@ -6,7 +6,7 @@ import type { SessionSummary } from "./types";
 // Raw shape returned by GET /api/sessions. Mirrors StateFile +
 // `alive` (added server-side).
 interface ApiEntry {
-  hootty: { key: string; pid?: number; created_at: string };
+  session: { key: string; pid?: number; created_at: string };
   state?: {
     state?: "starting" | "running" | "exited" | string;
     cmd?: string;
@@ -22,11 +22,11 @@ function toSummary(e: ApiEntry): SessionSummary {
   const s = e.state ?? {};
   const state = (s.state ?? (e.alive ? "running" : "exited")) as SessionSummary["state"];
   return {
-    key: e.hootty.key,
+    key: e.session.key,
     alive: e.alive,
     state: ["starting", "running", "exited"].includes(state) ? state : "unknown",
     cmd: s.cmd ?? "",
-    startedAt: s.started_at ?? e.hootty.created_at,
+    startedAt: s.started_at ?? e.session.created_at,
     pid: s.pid,
   };
 }
