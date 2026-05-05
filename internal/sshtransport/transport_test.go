@@ -1,9 +1,14 @@
 package sshtransport
 
 import (
+	"context"
+	"net"
+	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestControlPathIsShortAndStable(t *testing.T) {
@@ -54,5 +59,36 @@ func TestTunnelArgsShape(t *testing.T) {
 	}
 	if plan.RemoteSocket != "/home/me/.hoot/.tunnels/012345.sock" {
 		t.Fatalf("RemoteSocket = %q", plan.RemoteSocket)
+	}
+}
+
+func TestWaitHTTPReadyRequiresHealthz(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "hoot-sshtransport")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer os.RemoveAll(dir)
+	sockPath := filepath.Join(dir, "ready.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer ln.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	server := &http.Server{Handler: mux}
+	done := make(chan error, 1)
+	go func() {
+		done <- server.Serve(ln)
+	}()
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := waitHTTPReady(ctx, sockPath, make(chan error)); err != nil {
+		t.Fatalf("waitHTTPReady: %v", err)
 	}
 }

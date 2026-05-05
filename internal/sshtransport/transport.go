@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path"
@@ -83,7 +84,7 @@ func Open(ctx context.Context, cfg Config) (*Tunnel, error) {
 	go func() {
 		t.done <- cmd.Wait()
 	}()
-	if err := waitLocalSocket(ctx, plan.LocalSocket, t.done); err != nil {
+	if err := waitHTTPReady(ctx, plan.LocalSocket, t.done); err != nil {
 		_ = t.Close()
 		if text := strings.TrimSpace(stderr.String()); text != "" {
 			return nil, fmt.Errorf("%w: %s", err, text)
@@ -194,12 +195,17 @@ func baseArgs(cfg Config, controlPath string) []string {
 	return args
 }
 
-func waitLocalSocket(ctx context.Context, sockPath string, done <-chan error) error {
+func waitHTTPReady(ctx context.Context, sockPath string, done <-chan error) error {
 	deadline := time.NewTimer(5 * time.Second)
 	defer deadline.Stop()
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
-	var d net.Dialer
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", sockPath)
+		},
+	}}
 	for {
 		select {
 		case <-ctx.Done():
@@ -210,12 +216,18 @@ func waitLocalSocket(ctx context.Context, sockPath string, done <-chan error) er
 			}
 			return fmt.Errorf("ssh tunnel exited before ready")
 		case <-deadline.C:
-			return fmt.Errorf("ssh tunnel did not become ready")
+			return fmt.Errorf("ssh tunnel did not become HTTP-ready")
 		case <-ticker.C:
-			conn, err := d.DialContext(ctx, "unix", sockPath)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://hoot/healthz", nil)
+			if err != nil {
+				return err
+			}
+			resp, err := client.Do(req)
 			if err == nil {
-				_ = conn.Close()
-				return nil
+				_ = resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					return nil
+				}
 			}
 		}
 	}
