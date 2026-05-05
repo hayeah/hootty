@@ -1,6 +1,8 @@
 go.work
 go.work.sum
 bin/
+hoot-linux-amd64
+.cross/
 *.log
 node_modules/
 dist/

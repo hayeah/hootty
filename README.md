@@ -30,6 +30,9 @@ make build      # → bin/hoot
 make test
 ```
 
+To build a Linux `amd64` binary from macOS, see
+[`docs/cross-compile.md`](docs/cross-compile.md).
+
 Prereqs (one-time):
 
 - Zig 0.15.2 (`mise use -g zig@0.15.2` — Zig 0.16 does NOT work)
