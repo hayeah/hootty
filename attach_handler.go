@@ -8,9 +8,22 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/hayeah/supervisor/internal/attachwire"
 )
+
+const (
+	defaultAsciiCinemaPlaybackWindow = 5 * time.Minute
+	defaultAsciiCinemaPlaybackSpeed  = 8.0
+	maxAsciiCinemaPlaybackDelay      = 250 * time.Millisecond
+)
+
+type asciiCinemaPlaybackConfig struct {
+	Enabled bool
+	Window  time.Duration
+	Speed   float64
+}
 
 // attachHandler is the http.Handler that lives on /attach. It
 // expects an HTTP/1.1 Upgrade-style handshake; the client sends
@@ -189,16 +202,53 @@ func (h *attachHandler) serveOne(conn io.ReadWriteCloser, bufrw *bufio.ReadWrite
 	send(attachwire.MsgSnapshotScrollback, scrollback)
 	send(attachwire.MsgSnapshotScreen, screen)
 
-	// Now spool any chunks the live subscription has buffered (these
-	// are post-recOffset bytes) and continue forwarding live. Run in
-	// a goroutine so we can read client frames concurrently.
+	// Drain live chunks while historical playback runs. During
+	// playback they are buffered in process memory; after playback
+	// finishes, the goroutine flushes that queue and then forwards
+	// live chunks directly. This keeps the live cutover byte-clean
+	// without letting the subscriber channel fill and drop chunks.
+	playbackDone := make(chan struct{})
 	liveDone := make(chan struct{})
 	go func() {
 		defer close(liveDone)
-		for chunk := range liveCh {
-			send(attachwire.MsgOutput, chunk)
+		var pending [][]byte
+		buffering := true
+		playbackCh := playbackDone
+		for {
+			for !buffering && len(pending) > 0 {
+				send(attachwire.MsgOutput, pending[0])
+				pending[0] = nil
+				pending = pending[1:]
+			}
+			select {
+			case chunk, ok := <-liveCh:
+				if !ok {
+					for _, chunk := range pending {
+						send(attachwire.MsgOutput, chunk)
+					}
+					return
+				}
+				if buffering {
+					pending = append(pending, chunk)
+					continue
+				}
+				send(attachwire.MsgOutput, chunk)
+			case <-playbackCh:
+				buffering = false
+				playbackCh = nil
+			}
 		}
 	}()
+
+	playbackErr := h.sendAsciiCinemaPlayback(hello, send)
+	close(playbackDone)
+	if playbackErr != nil {
+		cancelSub()
+		<-liveDone
+		closeOut()
+		<-writerDone
+		return playbackErr
+	}
 
 	// Client reader loop. Runs on this goroutine. Handles Input
 	// (raw bytes to master), Size (client SIGWINCH), and any spurious
@@ -216,6 +266,74 @@ func (h *attachHandler) serveOne(conn io.ReadWriteCloser, bufrw *bufio.ReadWrite
 		return nil
 	}
 	return readErr
+}
+
+func (h *attachHandler) sendAsciiCinemaPlayback(hello attachwire.Hello, send func(byte, []byte)) error {
+	rec := h.pty.Recorder()
+	if rec == nil {
+		return nil
+	}
+	cfg := asciiCinemaPlaybackConfigFromHello(hello)
+	if !cfg.Enabled {
+		return nil
+	}
+	return streamAsciiCinemaPlayback(rec.Path(), cfg, func(chunk []byte) {
+		send(attachwire.MsgOutput, chunk)
+	})
+}
+
+func asciiCinemaPlaybackConfigFromHello(hello attachwire.Hello) asciiCinemaPlaybackConfig {
+	cfg := asciiCinemaPlaybackConfig{
+		Enabled: true,
+		Window:  defaultAsciiCinemaPlaybackWindow,
+		Speed:   defaultAsciiCinemaPlaybackSpeed,
+	}
+	if hello.AsciiCinemaPlayback != nil {
+		cfg.Enabled = *hello.AsciiCinemaPlayback
+	}
+	if hello.AsciiCinemaPlaybackWindowSeconds != nil && *hello.AsciiCinemaPlaybackWindowSeconds >= 0 {
+		cfg.Window = time.Duration(*hello.AsciiCinemaPlaybackWindowSeconds * float64(time.Second))
+	}
+	if hello.AsciiCinemaPlaybackSpeed != nil && *hello.AsciiCinemaPlaybackSpeed > 0 {
+		cfg.Speed = *hello.AsciiCinemaPlaybackSpeed
+	}
+	return cfg
+}
+
+func streamAsciiCinemaPlayback(path string, cfg asciiCinemaPlaybackConfig, send func([]byte)) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	events, err := ReadAsciicastOutputEvents(path, cfg.Window)
+	if err != nil {
+		return fmt.Errorf("asciicast playback: %w", err)
+	}
+	if len(events) == 0 {
+		return nil
+	}
+	speed := cfg.Speed
+	if speed <= 0 {
+		speed = defaultAsciiCinemaPlaybackSpeed
+	}
+	var stripper vtQueryStripper
+	prev := events[0].At
+	for i, ev := range events {
+		if i > 0 {
+			delay := time.Duration(float64(ev.At-prev) / speed)
+			if delay > maxAsciiCinemaPlaybackDelay {
+				delay = maxAsciiCinemaPlaybackDelay
+			}
+			if delay > 0 {
+				time.Sleep(delay)
+			}
+			prev = ev.At
+		}
+		filtered := stripper.Filter(ev.Data)
+		if len(filtered) > 0 {
+			send(filtered)
+		}
+	}
+	return nil
 }
 
 // clientReadLoop reads framed messages from the client until EOF or

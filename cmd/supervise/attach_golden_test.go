@@ -124,7 +124,7 @@ func startAttach(t *testing.T, remote *attachetest.Remote, local *attachetest.Lo
 		done <- runSession(ctx, conn, cols, rows, shared, attachLabel{Session: session, Host: "local"}, &attached, attachWriters{
 			stdout: local,
 			stderr: io.Discard,
-		})
+		}, attachPlaybackConfig{Enabled: true, Window: 5 * time.Minute, Speed: 8})
 	}()
 	deadline := time.Now().Add(2 * time.Second)
 	for !attached.Load() {

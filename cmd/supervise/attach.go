@@ -60,6 +60,12 @@ func cmdAttach(args []string) int {
                          only used for local attach (no --host)
   --no-reconnect         exit on first drop instead of auto-reconnecting
                          (--host only; ignored for local attach)
+  --no-ascii-cinema-playback
+                         skip asciicast history playback on first attach
+  --ascii-cinema-playback-window <duration>
+                         history window to replay (default 5m; 0 = full cast)
+  --ascii-cinema-playback-speed <float>
+                         playback speed multiplier (default 8)
   --prefix-key <key>     command prefix byte (default: C-^). Forms: C-^, ^^,
                          0x1e, or a single ASCII control byte.
 
@@ -75,6 +81,9 @@ retries forever. Press any key to wake the backoff and retry now.
 	host := fs.String("host", "", "remote `supervise serve` host (host:port or URL)")
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
 	noReconnect := fs.Bool("no-reconnect", false, "exit on first drop instead of auto-reconnecting (--host only)")
+	noAsciiCinemaPlayback := fs.Bool("no-ascii-cinema-playback", false, "skip asciicast history playback on first attach")
+	asciiCinemaPlaybackWindow := fs.Duration("ascii-cinema-playback-window", 5*time.Minute, "asciicast history window to replay (0 = full cast)")
+	asciiCinemaPlaybackSpeed := fs.Float64("ascii-cinema-playback-speed", 8, "asciicast playback speed multiplier")
 	prefixSpec := fs.String("prefix-key", "C-^", "command prefix byte (e.g. C-^, ^a, 0x1c)")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -89,6 +98,20 @@ retries forever. Press any key to wake the backoff and retry now.
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "supervise attach: %v\n", err)
 		return 2
+	}
+	if *asciiCinemaPlaybackWindow < 0 {
+		fmt.Fprintln(os.Stderr, "supervise attach: --ascii-cinema-playback-window must be >= 0")
+		return 2
+	}
+	if *asciiCinemaPlaybackSpeed <= 0 {
+		fmt.Fprintln(os.Stderr, "supervise attach: --ascii-cinema-playback-speed must be > 0")
+		return 2
+	}
+
+	playback := attachPlaybackConfig{
+		Enabled: !*noAsciiCinemaPlayback,
+		Window:  *asciiCinemaPlaybackWindow,
+		Speed:   *asciiCinemaPlaybackSpeed,
 	}
 
 	var dial dialFn
@@ -115,7 +138,7 @@ retries forever. Press any key to wake the backoff and retry now.
 		label = attachLabel{Session: state.Supervisor.Key, Host: "local"}
 	}
 
-	exitCode, err := runAttachLoop(dial, prefixByte, reconnect, label)
+	exitCode, err := runAttachLoop(dial, prefixByte, reconnect, label, playback)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "supervise attach: %v\n", err)
 	}
@@ -137,12 +160,18 @@ type attachWriters struct {
 	stderr io.Writer
 }
 
+type attachPlaybackConfig struct {
+	Enabled bool
+	Window  time.Duration
+	Speed   float64
+}
+
 // runAttachLoop is the top-level driver. It owns termios, signal
 // traps, the stdin reader and SIGWINCH watcher; everything below
 // re-runs per attempt across reconnects.
 //
 // Returns the process exit code and an optional error to print.
-func runAttachLoop(dial dialFn, prefixByte byte, reconnect bool, label attachLabel) (int, error) {
+func runAttachLoop(dial dialFn, prefixByte byte, reconnect bool, label attachLabel, playback attachPlaybackConfig) (int, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	writers := attachWriters{stdout: os.Stdout, stderr: os.Stderr}
@@ -230,7 +259,7 @@ func runAttachLoop(dial dialFn, prefixByte byte, reconnect bool, label attachLab
 	}()
 
 	// Reconnect loop.
-	loopErr := runConnectLoop(ctx, dial, reconnect, &size, shared, label, &attached, writers)
+	loopErr := runConnectLoop(ctx, dial, reconnect, &size, shared, label, &attached, writers, playback)
 
 	// Determine exit code from outer signals.
 	select {
@@ -266,6 +295,7 @@ func runConnectLoop(
 	label attachLabel,
 	attached *atomic.Bool,
 	writers attachWriters,
+	playback attachPlaybackConfig,
 ) error {
 	gotConnectedOnce := false
 	for {
@@ -299,7 +329,11 @@ func runConnectLoop(
 		// Connected. Reset backoff and send Hello with current size.
 		shared.resetTier()
 		c, r := unpackSize(size.Load())
-		err = runSession(ctx, conn, c, r, shared, label, attached, writers)
+		sessionPlayback := playback
+		if gotConnectedOnce {
+			sessionPlayback.Enabled = false
+		}
+		err = runSession(ctx, conn, c, r, shared, label, attached, writers, sessionPlayback)
 		_ = conn.Close()
 
 		if ctx.Err() != nil {
@@ -346,6 +380,7 @@ func runSession(
 	label attachLabel,
 	attached *atomic.Bool,
 	writers attachWriters,
+	playback attachPlaybackConfig,
 ) error {
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
 	defer sessionCancel()
@@ -384,9 +419,15 @@ func runSession(
 	defer shared.clearSend()
 
 	// Hello.
+	playbackEnabled := playback.Enabled
+	playbackWindowSeconds := playback.Window.Seconds()
+	playbackSpeed := playback.Speed
 	helloPayload, _ := json.Marshal(attachwire.Hello{
-		Cols: cols,
-		Rows: rows,
+		Cols:                             cols,
+		Rows:                             rows,
+		AsciiCinemaPlayback:              &playbackEnabled,
+		AsciiCinemaPlaybackWindowSeconds: &playbackWindowSeconds,
+		AsciiCinemaPlaybackSpeed:         &playbackSpeed,
 	})
 	if !send(attachwire.MsgHello, helloPayload) {
 		return errors.New("ctx cancelled before Hello")
