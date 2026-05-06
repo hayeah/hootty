@@ -299,9 +299,11 @@ func dialSock(ctx context.Context, sockPath string) (net.Conn, error) {
 }
 
 // pumpUpstreamToWS reads attachwire frames from the session and
-// forwards MsgOutput as binary WS frames. MsgSize is dropped (the
-// browser doesn't need to mirror remote size). Anything else is a
-// protocol error.
+// forwards VT-byte payloads (Output + the two snapshot frames) to
+// the browser as binary WS frames. MsgSize is dropped (the browser
+// sets its own size on resize). Ping/Pong are heartbeat frames the
+// CLI client uses; the browser's WS layer has its own keepalive, so
+// we drop them. Anything else is a protocol error.
 func pumpUpstreamToWS(ctx context.Context, ws *websocket.Conn, r *bufio.Reader) error {
 	for {
 		typ, payload, err := attachwire.ReadFrame(r)
@@ -309,12 +311,21 @@ func pumpUpstreamToWS(ctx context.Context, ws *websocket.Conn, r *bufio.Reader) 
 			return err
 		}
 		switch typ {
-		case attachwire.MsgOutput:
+		case attachwire.MsgOutput,
+			attachwire.MsgSnapshotScrollback,
+			attachwire.MsgSnapshotScreen:
+			// All three carry VT bytes that xterm.js renders the same
+			// way. The CLI client clears the viewport before
+			// MsgSnapshotScreen; xterm.js handles the formatter's
+			// embedded cursor-home + erase-display sequences directly,
+			// so no special-casing is needed here.
 			if werr := ws.Write(ctx, websocket.MessageBinary, payload); werr != nil {
 				return werr
 			}
 		case attachwire.MsgSize:
 			// ignore — browser sets its own size on resize
+		case attachwire.MsgPing, attachwire.MsgPong:
+			// ignore — WebSocket has its own keepalive
 		case attachwire.MsgHello, attachwire.MsgInput:
 			return fmt.Errorf("session sent unexpected frame 0x%02x", typ)
 		default:
