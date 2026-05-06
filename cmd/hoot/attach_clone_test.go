@@ -56,7 +56,7 @@ func TestRunAttachLoopPrefixCClonesAndSwitches(t *testing.T) {
 		err  error
 	}, 1)
 	go func() {
-		code, err := runAttachLoop(first, 0x1e, false, attachPlaybackConfig{})
+		code, err := runAttachLoop(first, 0x1e, false)
 		done <- struct {
 			code int
 			err  error

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"time"
 
 	"golang.org/x/term"
 
@@ -31,9 +30,6 @@ func cmdRun(args []string) error {
 	remoteFlag := fs.String("remote", "", "remote hoot serve URL (http://host:port, host:port, or ssh://host)")
 	attach := fs.Bool("attach", false, "attach to the new session after it starts")
 	noReconnect := fs.Bool("no-reconnect", false, "exit on first drop instead of auto-reconnecting during post-spawn attach (--remote only)")
-	noAsciiCinemaPlayback := fs.Bool("no-ascii-cinema-playback", false, "skip asciicast history playback during post-spawn attach")
-	asciiCinemaPlaybackWindow := fs.Duration("ascii-cinema-playback-window", 5*time.Minute, "asciicast history window to replay during post-spawn attach (0 = full cast)")
-	asciiCinemaPlaybackSpeed := fs.Float64("ascii-cinema-playback-speed", 8, "asciicast playback speed multiplier during post-spawn attach")
 	prefixSpec := fs.String("prefix-key", "C-^", "command prefix byte for post-spawn attach (e.g. C-^, ^a, 0x1c)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -45,9 +41,6 @@ func cmdRun(args []string) error {
 	attachOpts, err := attachOptionsFromFlags(
 		*prefixSpec,
 		*noReconnect,
-		*noAsciiCinemaPlayback,
-		*asciiCinemaPlaybackWindow,
-		*asciiCinemaPlaybackSpeed,
 	)
 	if err != nil {
 		return fmt.Errorf("run: %w", err)
@@ -92,7 +85,6 @@ func cmdRun(args []string) error {
 			remoteAttachTarget(remote, sessionKey),
 			attachOpts.PrefixByte,
 			!attachOpts.NoReconnect,
-			attachOpts.Playback,
 		)
 		if exitCode != 0 || err != nil {
 			return &exitError{code: exitCode, err: err}
@@ -142,7 +134,6 @@ func cmdRun(args []string) error {
 		localAttachTarget(*stateDir, *key),
 		attachOpts.PrefixByte,
 		false,
-		attachOpts.Playback,
 	)
 	if exitCode != 0 || err != nil {
 		return &exitError{code: exitCode, err: err}

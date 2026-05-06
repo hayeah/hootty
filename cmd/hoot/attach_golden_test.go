@@ -7,13 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/hayeah/hootty"
 	"github.com/hayeah/hootty/internal/attachetest"
 	"github.com/hayeah/hootty/internal/attachwire"
 )
@@ -53,26 +51,6 @@ func TestAttachGoldenSnapshots(t *testing.T) {
 		local.WaitText(t, "FULL-08")
 
 		attachetest.CompareGolden(t, "attach-full-visible-screen", local.Snapshot(t))
-	})
-
-	t.Run("asciicast playback follows visible screen phase", func(t *testing.T) {
-		rec, err := session.NewRecorder(filepath.Join(t.TempDir(), "pty.cast"), 40, 8)
-		if err != nil {
-			t.Fatalf("NewRecorder: %v", err)
-		}
-		remote := attachetest.NewRemoteWithOptions(t, 40, 8, session.WithRecorder(rec))
-		local := attachetest.NewLocalTerminal(t, 40, 8)
-		remote.WriteAndWait(t, []byte("playback-a\r\nplayback-b\r\n\x1b[H\x1b[2Jscreen-now"), "screen-now")
-
-		finish := startAttachWithPlayback(t, remote, local, 40, 8, "playback", attachPlaybackConfig{
-			Enabled: true,
-			Window:  time.Minute,
-			Speed:   1000,
-		})
-		defer finish()
-		local.WaitRawText(t, "playback-b")
-
-		attachetest.CompareGolden(t, "attach-asciicast-playback-raw", local.RawSnapshot(t))
 	})
 
 	t.Run("detach clears viewport and keeps scrollback", func(t *testing.T) {
@@ -136,15 +114,6 @@ func TestAttachGoldenSnapshots(t *testing.T) {
 
 func startAttach(t *testing.T, remote *attachetest.Remote, local *attachetest.LocalTerminal, cols, rows uint16, session string) func() {
 	t.Helper()
-	return startAttachWithPlayback(t, remote, local, cols, rows, session, attachPlaybackConfig{
-		Enabled: true,
-		Window:  5 * time.Minute,
-		Speed:   8,
-	})
-}
-
-func startAttachWithPlayback(t *testing.T, remote *attachetest.Remote, local *attachetest.LocalTerminal, cols, rows uint16, session string, playback attachPlaybackConfig) func() {
-	t.Helper()
 	conn := remote.DialAttach(t)
 	if err := upgradeAttachConn(conn, remote.AttachURL()); err != nil {
 		t.Fatalf("upgrade attach: %v", err)
@@ -158,7 +127,7 @@ func startAttachWithPlayback(t *testing.T, remote *attachetest.Remote, local *at
 		done <- runSession(ctx, conn, cols, rows, shared, attachLabel{Session: session, Host: "local"}, &attached, attachWriters{
 			stdout: local,
 			stderr: io.Discard,
-		}, playback, modeTracker)
+		}, modeTracker)
 	}()
 	deadline := time.Now().Add(2 * time.Second)
 	for !attached.Load() {
@@ -226,7 +195,7 @@ func TestRunSessionHeartbeatClosesIdleConnection(t *testing.T) {
 	err := runSession(ctx, clientConn, 80, 24, shared, attachLabel{Session: "idle", Host: "test"}, &attached, attachWriters{
 		stdout: io.Discard,
 		stderr: io.Discard,
-	}, attachPlaybackConfig{}, &terminalModeTracker{})
+	}, &terminalModeTracker{})
 	if err == nil {
 		t.Fatalf("runSession err = nil, want idle connection error")
 	}
