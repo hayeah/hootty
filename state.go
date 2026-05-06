@@ -25,4 +25,6 @@ type SessionState struct {
 	Key       string    `json:"key"`
 	PID       int       `json:"pid,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+	Argv      []string  `json:"argv,omitempty"`
+	CWD       string    `json:"cwd,omitempty"`
 }

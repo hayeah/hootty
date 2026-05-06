@@ -6,13 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
-
-	"github.com/creack/pty"
 
 	"github.com/hayeah/hootty"
 )
@@ -75,7 +70,17 @@ func (s *serveState) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sockPath, err := spawnSession(s.stateDir, key, argv)
+	cwd, err := os.Getwd()
+	if err != nil {
+		http.Error(w, "getcwd: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sockPath, err := spawnSessionFromSpec(s.stateDir, key, spawnSpec{
+		Argv: argv,
+		CWD:  cwd,
+		Cols: 80,
+		Rows: 24,
+	})
 	if err != nil {
 		http.Error(w, "spawn: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -133,56 +138,6 @@ func (s *serveState) closeSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// spawnSession forks `hoot __session --state-dir <d>
-// --key <k> -- <argv...>` as a detached grandchild, mirroring
-// cmdRun (run.go) but without the foreground attach. Returns the
-// rpc.sock path once it appears.
-func spawnSession(stateDir, key string, argv []string) (string, error) {
-	master, slave, err := pty.Open()
-	if err != nil {
-		return "", fmt.Errorf("pty.Open: %w", err)
-	}
-	defer master.Close()
-	defer slave.Close()
-	// The webui will issue a resize as soon as it attaches; 80x24
-	// is a sane default for the brief window before that.
-	if err := pty.Setsize(slave, &pty.Winsize{Cols: 80, Rows: 24}); err != nil {
-		return "", fmt.Errorf("setsize: %w", err)
-	}
-
-	self, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("os.Executable: %w", err)
-	}
-	hootArgs := []string{
-		"__session",
-		"--state-dir", stateDir,
-		"--key", key,
-		"--",
-	}
-	hootArgs = append(hootArgs, argv...)
-
-	cmd := exec.Command(self, hootArgs...)
-	cmd.Stdin = slave
-	cmd.Stdout = slave
-	cmd.Stderr = slave
-	cmd.ExtraFiles = []*os.File{master}
-	// Setsid: session in its own session. See run.go for why.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("fork hoot: %w", err)
-	}
-	// Don't wait on the grandchild; the serve process should not
-	// reap it.
-	_ = cmd.Process.Release()
-
-	sockPath := filepath.Join(stateDir, key, "rpc.sock")
-	if err := waitForSocket(sockPath, 3*time.Second); err != nil {
-		return "", err
-	}
-	return sockPath, nil
 }
 
 // splitCmd is a small shell-ish tokenizer: whitespace separates

@@ -8,12 +8,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"syscall"
 	"time"
 
-	"github.com/creack/pty"
 	"golang.org/x/term"
 
 	"github.com/hayeah/hootty"
@@ -125,62 +121,21 @@ func cmdRun(args []string) error {
 		}
 	}
 
-	// Open PTY pair; configure slave size so the child's TIOCGWINSZ
-	// returns sane values.
-	master, slave, err := pty.Open()
+	cwd, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("pty.Open: %w", err)
+		return fmt.Errorf("getcwd: %w", err)
 	}
-	if err := pty.Setsize(slave, &pty.Winsize{Cols: cols, Rows: rows}); err != nil {
-		master.Close()
-		slave.Close()
-		return fmt.Errorf("setsize: %w", err)
-	}
-
-	self, err := os.Executable()
+	sockPath, err := spawnSessionFromSpec(*stateDir, *key, spawnSpec{
+		Argv: rest,
+		CWD:  cwd,
+		Cols: cols,
+		Rows: rows,
+	})
 	if err != nil {
-		master.Close()
-		slave.Close()
-		return fmt.Errorf("os.Executable: %w", err)
-	}
-	hootArgs := []string{
-		"__session",
-		"--state-dir", *stateDir,
-		"--key", *key,
-		"--",
-	}
-	hootArgs = append(hootArgs, rest...)
-
-	cmd := exec.Command(self, hootArgs...)
-	cmd.Stdin = slave
-	cmd.Stdout = slave
-	cmd.Stderr = slave
-	cmd.ExtraFiles = []*os.File{master}
-	// Session runs in its own session (Setsid). The Service
-	// inside will Setctty to claim the slave; keeping the
-	// session session-less for this tty is what lets master-side
-	// TIOCSWINSZ keep working after the child takes the fg pgrp.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-
-	if err := cmd.Start(); err != nil {
-		master.Close()
-		slave.Close()
-		return fmt.Errorf("fork session: %w", err)
-	}
-
-	// Parent is done with both ends — child has its own dups.
-	_ = slave.Close()
-	_ = master.Close()
-
-	// Wait for the session to open its socket so we can promise
-	// the caller a usable session before returning.
-	sockPath := filepath.Join(*stateDir, *key, "rpc.sock")
-	if err := waitForSocket(sockPath, 3*time.Second); err != nil {
-		return fmt.Errorf("run: session did not open socket: %w", err)
+		return fmt.Errorf("run: session did not start: %w", err)
 	}
 
 	fmt.Fprintf(os.Stderr, "hoot: session %q started (state-dir=%s)\n", *key, *stateDir)
-	_ = cmd.Process.Release()
 	if !*attach {
 		fmt.Println(*key)
 		return nil
@@ -210,16 +165,4 @@ func generateKey(store *session.Store) (string, error) {
 		existing[st.Session.Key] = true
 	}
 	return shortid.Generate(existing)
-}
-
-// waitForSocket polls for the unix socket file to appear.
-func waitForSocket(path string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); err == nil {
-			return nil
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	return fmt.Errorf("timeout waiting for %s", path)
 }

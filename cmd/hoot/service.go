@@ -17,8 +17,10 @@ import (
 // state transitions (starting → running → exited), return when the
 // child exits. No restart, no briefing, no idle detection.
 type RunCmdService struct {
-	Cmd  string
-	Args []string
+	Cmd      string
+	Args     []string
+	StateDir string
+	Key      string
 }
 
 type runState struct {
