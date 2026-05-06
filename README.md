@@ -216,8 +216,14 @@ previously empty local primary. The snapshot subscribe pair is
 race-free — both happen on the dispatcher goroutine, so live chunks
 delivered after subscribe carry no overlap with the snapshot.
 
-On detach, the client locally leaves alt screen defensively, resets
-SGR, shows the cursor, clears only the viewport, and prints
+On attach, the server snapshot restores terminal mode state, including
+kitty keyboard and modify-other-keys state for TUIs that need richer
+key reports. If a snapshot applies kitty keyboard state, the client
+first creates a local stack frame so detach can pop only the frame hoot
+owns. On detach, the client locally unwinds observed kitty keyboard and
+modify-other-keys state, disables focus events, bracketed paste, and
+mouse tracking, then leaves alt screen defensively, resets SGR, shows
+the cursor, clears only the viewport, and prints
 `[disconnected. <session> @ <host>]` before exiting. None of these
 cleanup bytes are written to the remote PTY or other attached clients.
 
