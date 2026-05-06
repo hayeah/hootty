@@ -97,6 +97,7 @@ hoot attach  [--remote <url>] [--state-dir <dir>] [--no-reconnect]
                   [--ascii-cinema-playback-window <duration>]
                   [--ascii-cinema-playback-speed <float>]
                   [--prefix-key <key>] <id-or-prefix>
+hoot kill    [--remote <url>] [--state-dir <dir>] [-s <signal>] <id-or-prefix>
 hoot serve   [--state-dir <dir>] --bind <host:port|unix:/path.sock> [--prefix /api]
 ```
 
@@ -181,6 +182,36 @@ clone-of-clone unless passed again.
 Bare `hoot clone` is detached by default and prints the new key on
 stdout, matching `hoot run`. `--attach` switches into the cloned
 session after creation.
+
+### `hoot kill`
+
+`kill` sends a Unix signal to the foreground process group of a session's
+PTY — the same target the kernel uses for keyboard-generated signals like
+Ctrl-C. For an interactive shell session this routes the signal to whatever
+job the user has in the foreground; for a non-interactive child it lands
+on that child directly.
+
+```sh
+hoot kill abc                  # send SIGTERM (default)
+hoot kill -s INT abc           # interrupt the foreground job
+hoot kill -s KILL abc          # force-kill; supervisor tears down
+hoot kill -s USR1 abc          # arbitrary signal by name
+hoot kill -s 9 abc             # or by number
+hoot kill --remote ssh://devbox abc
+```
+
+Mechanism: the CLI POSTs `{"signal":"TERM"}` to `/signal` on the session's
+`rpc.sock` (local) or to `/sessions/{key}/signal` on a `hoot serve`
+multiplexer (remote, `--remote`). The supervisor reads the PTY's
+`tcgetpgrp` and delivers `kill(-fgpgid, sig)`; if no foreground process
+group is reported it falls back to signaling the supervised child PID.
+
+Signal names accept the standard POSIX set with or without the `SIG`
+prefix (case-insensitive), or a small positive integer.
+
+Exit codes: `0` delivered, `1` I/O error, `2` usage / unknown signal,
+`3` no such session or ambiguous prefix, `5` session exists but child
+not running.
 
 ### `hoot attach`
 

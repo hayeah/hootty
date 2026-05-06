@@ -32,6 +32,7 @@ import (
 //	GET    /sessions/{key}            state.json (alias of /state)
 //	POST   /sessions/{key}/clone      spawn sibling from session argv/cwd
 //	GET    /sessions/{key}/resolve    resolve full key or unique prefix
+//	POST   /sessions/{key}/signal     forward {"signal": ...} to rpc.sock
 //	DELETE /sessions/{key}            SIGTERM the session by pid
 //	GET    /sessions/{key}/state      state.json
 //	GET    /sessions/{key}/events     SSE proxy of upstream /events
@@ -60,6 +61,7 @@ func cmdServe(args []string) error {
 	register(mux, *prefix, "/sessions", srv.handleSessions)
 	register(mux, *prefix, "/sessions/{key}", srv.handleSession)
 	register(mux, *prefix, "/sessions/{key}/clone", srv.handleClone)
+	register(mux, *prefix, "/sessions/{key}/signal", srv.handleSignal)
 	register(mux, *prefix, "/sessions/{key}/resolve", srv.handleResolve)
 	register(mux, *prefix, "/sessions/{key}/state", srv.handleState)
 	register(mux, *prefix, "/sessions/{key}/events", srv.handleEvents)

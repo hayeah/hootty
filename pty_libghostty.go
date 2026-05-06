@@ -8,10 +8,19 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"syscall"
 
 	"github.com/creack/pty"
 	libghostty "github.com/mitchellh/go-libghostty"
+	"golang.org/x/sys/unix"
 )
+
+// ErrNoForeground is returned by LibghosttyPTY.SignalForeground when
+// the kernel reports no foreground process group on the PTY (e.g.
+// the controlling terminal has been disowned, or the ioctl returned
+// 0 / 1). Callers typically handle this by falling back to signaling
+// a known child PID directly.
+var ErrNoForeground = errors.New("pty: no foreground process group")
 
 // LibghosttyPTY owns a PTY master fd and a libghostty Terminal that
 // parses every byte the child writes. The single-dispatcher pattern
@@ -392,6 +401,35 @@ func (p *LibghosttyPTY) Resize(cols, rows uint16) error {
 	p.mu.Lock()
 	p.cols, p.rows = cols, rows
 	p.mu.Unlock()
+	return nil
+}
+
+// SignalForeground delivers sig to the PTY's current foreground
+// process group — the same target the kernel uses for keyboard-
+// generated signals like Ctrl-C / Ctrl-\\ / Ctrl-Z. Mechanism:
+// tcgetpgrp(masterFD) via TIOCGPGRP, then kill(-pgid, sig).
+//
+// For an interactive shell session this routes signals to whatever
+// job the user has in the foreground (e.g. the editor they're
+// editing in), matching the behavior of pressing the corresponding
+// control key at a real terminal. For a non-interactive child that
+// is the only process on the PTY, the foreground pgid IS the child's
+// pgid, so this collapses to "signal the process group of the child."
+//
+// Returns ErrNoForeground if the ioctl reports 0 or 1 (kernel
+// sentinel for "no controlling-terminal foreground"), so callers can
+// fall back to signaling a specific PID.
+func (p *LibghosttyPTY) SignalForeground(sig syscall.Signal) error {
+	pgid, err := unix.IoctlGetInt(int(p.master.Fd()), unix.TIOCGPGRP)
+	if err != nil {
+		return fmt.Errorf("tcgetpgrp: %w", err)
+	}
+	if pgid <= 1 {
+		return ErrNoForeground
+	}
+	if err := syscall.Kill(-pgid, sig); err != nil {
+		return fmt.Errorf("kill(-%d, %s): %w", pgid, sig, err)
+	}
 	return nil
 }
 
