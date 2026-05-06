@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -105,9 +106,8 @@ retries forever. Press any key to wake the backoff and retry now.
 		return 2
 	}
 
-	var dial dialFn
+	var target attachTarget
 	var reconnect bool
-	var label attachLabel
 	remote, err := parseRemoteFlag(*remoteFlag, *stateDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hoot attach: %v\n", err)
@@ -115,9 +115,8 @@ retries forever. Press any key to wake the backoff and retry now.
 	}
 	if remote != nil {
 		defer remote.Close()
-		dial = dialAttachRaw(remote, rest[0])
 		reconnect = !attachOpts.NoReconnect
-		label = attachLabel{Session: rest[0], Host: remote.display}
+		target = remoteAttachTarget(remote, rest[0])
 	} else {
 		store := session.NewStore(*stateDir)
 		state, err := store.Resolve(rest[0])
@@ -125,12 +124,10 @@ retries forever. Press any key to wake the backoff and retry now.
 			fmt.Fprintf(os.Stderr, "hoot attach: %v\n", err)
 			return 2
 		}
-		sockPath := filepath.Join(*stateDir, state.Session.Key, "rpc.sock")
-		dial = localDialer(sockPath)
-		label = attachLabel{Session: state.Session.Key, Host: "local"}
+		target = localAttachTarget(*stateDir, state.Session.Key)
 	}
 
-	exitCode, err := runAttachLoop(dial, attachOpts.PrefixByte, reconnect, label, attachOpts.Playback)
+	exitCode, err := runAttachLoop(target, attachOpts.PrefixByte, reconnect, attachOpts.Playback)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hoot attach: %v\n", err)
 	}
@@ -145,6 +142,29 @@ type dialFn func(ctx context.Context) (net.Conn, error)
 type attachLabel struct {
 	Session string
 	Host    string
+}
+
+type attachTarget struct {
+	dial  dialFn
+	label attachLabel
+	clone func(ctx context.Context) (attachTarget, error)
+}
+
+type attachTargetState struct {
+	mu     sync.Mutex
+	target attachTarget
+}
+
+func (s *attachTargetState) current() attachTarget {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.target
+}
+
+func (s *attachTargetState) set(target attachTarget) {
+	s.mu.Lock()
+	s.target = target
+	s.mu.Unlock()
 }
 
 type attachWriters struct {
@@ -196,14 +216,15 @@ const (
 // re-runs per attempt across reconnects.
 //
 // Returns the process exit code and an optional error to print.
-func runAttachLoop(dial dialFn, prefixByte byte, reconnect bool, label attachLabel, playback attachPlaybackConfig) (int, error) {
+func runAttachLoop(initial attachTarget, prefixByte byte, reconnect bool, playback attachPlaybackConfig) (int, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	writers := attachWriters{stdout: os.Stdout, stderr: os.Stderr}
+	targets := &attachTargetState{target: initial}
 	var attached atomic.Bool
 	defer func() {
 		if attached.Load() {
-			emitDetach(writers.stdout, label)
+			emitDetach(writers.stdout, targets.current().label)
 		}
 	}()
 
@@ -280,11 +301,24 @@ func runAttachLoop(dial dialFn, prefixByte byte, reconnect bool, label attachLab
 	stdinDone := make(chan struct{})
 	go func() {
 		defer close(stdinDone)
-		runStdinFSM(ctx, prefixByte, shared, cancel)
+		runStdinFSM(ctx, prefixByte, shared, cancel, func(ctx context.Context) error {
+			current := targets.current()
+			if current.clone == nil {
+				return errors.New("clone is not supported for this attach target")
+			}
+			fmt.Fprintf(writers.stderr, "\r\n\x1b[2m[hoot: cloning %s...]\x1b[0m\r\n", current.label.Session)
+			next, err := current.clone(ctx)
+			if err != nil {
+				return err
+			}
+			targets.set(next)
+			shared.markSwitched()
+			return nil
+		}, writers.stderr)
 	}()
 
 	// Reconnect loop.
-	loopErr := runConnectLoop(ctx, dial, reconnect, &size, shared, label, &attached, writers, playback)
+	loopErr := runConnectLoop(ctx, targets, reconnect, &size, shared, &attached, writers, playback)
 
 	// Determine exit code from outer signals.
 	select {
@@ -313,11 +347,10 @@ func runAttachLoop(dial dialFn, prefixByte byte, reconnect bool, label attachLab
 //     even with reconnect=true; a typo'd host should error in a beat)
 func runConnectLoop(
 	ctx context.Context,
-	dial dialFn,
+	targets *attachTargetState,
 	reconnect bool,
 	size *atomic.Uint64,
 	shared *sharedSession,
-	label attachLabel,
 	attached *atomic.Bool,
 	writers attachWriters,
 	playback attachPlaybackConfig,
@@ -325,7 +358,8 @@ func runConnectLoop(
 	gotConnectedOnce := false
 	for {
 		// Dial.
-		conn, err := dial(ctx)
+		target := targets.current()
+		conn, err := target.dial(ctx)
 		if err != nil {
 			// User cancelled (e.g. <prefix>d before we connected, or
 			// SIGINT during dial). Clean exit, not error.
@@ -358,12 +392,16 @@ func runConnectLoop(
 		if gotConnectedOnce {
 			sessionPlayback.Enabled = false
 		}
-		err = runSession(ctx, conn, c, r, shared, label, attached, writers, sessionPlayback)
+		err = runSession(ctx, conn, c, r, shared, target.label, attached, writers, sessionPlayback)
 		_ = conn.Close()
 
 		if ctx.Err() != nil {
 			// User detach / signal — clean exit regardless of err.
 			return nil
+		}
+		if shared.takeSwitched() {
+			gotConnectedOnce = false
+			continue
 		}
 		gotConnectedOnce = true
 		if !reconnect {
@@ -446,7 +484,7 @@ func runSession(
 	// from a SIGWINCH that fired between connect and Hello aren't
 	// lost. (Order doesn't matter as long as Hello goes first; our
 	// channel buffers up to 256 so an early Size queues behind.)
-	shared.setSend(send)
+	shared.setSend(send, conn)
 	defer shared.clearSend()
 
 	// Hello.
@@ -536,7 +574,8 @@ func runSession(
 //	<prefix> ^       send a literal prefix byte to the remote
 //	<prefix> Ctrl-Z  SIGTSTP self (resume with fg)
 //	<prefix> ?       print one-line help on stderr
-func runStdinFSM(ctx context.Context, prefix byte, shared *sharedSession, cancel context.CancelFunc) {
+//	<prefix> c       clone current session and switch to it
+func runStdinFSM(ctx context.Context, prefix byte, shared *sharedSession, cancel context.CancelFunc, clone func(context.Context) error, stderr io.Writer) {
 	type readResult struct {
 		b   byte
 		err error
@@ -589,8 +628,12 @@ func runStdinFSM(ctx context.Context, prefix byte, shared *sharedSession, cancel
 				case 0x1a: // Ctrl-Z: suspend self, resume with fg
 					_ = syscall.Kill(os.Getpid(), syscall.SIGTSTP)
 				case '?':
-					fmt.Fprintln(os.Stderr,
-						"\r\nhoot attach commands: \".\" detach, \"^\" literal prefix, \"Ctrl-Z\" suspend, \"?\" help\r")
+					fmt.Fprintln(stderr,
+						"\r\nhoot attach commands: \".\" detach, \"^\" literal prefix, \"Ctrl-Z\" suspend, \"c\" clone, \"?\" help\r")
+				case 'c':
+					if err := clone(ctx); err != nil {
+						fmt.Fprintf(stderr, "\r\n\x1b[2m[hoot: clone failed: %v]\x1b[0m\r\n", err)
+					}
 				default:
 					// silent ignore
 				}
@@ -682,22 +725,48 @@ func emitDetach(w io.Writer, label attachLabel) {
 // When sendFn is nil, the session is disconnected and inputs are
 // dropped (with a wake signal for stdin events).
 type sharedSession struct {
-	mu     sync.Mutex
-	sendFn func(typ byte, payload []byte) bool
-	wake   chan struct{}
-	tier   atomic.Int32 // current backoff tier; 0 = first retry == 1s
+	mu       sync.Mutex
+	sendFn   func(typ byte, payload []byte) bool
+	conn     net.Conn
+	switched bool
+	wake     chan struct{}
+	tier     atomic.Int32 // current backoff tier; 0 = first retry == 1s
 }
 
-func (s *sharedSession) setSend(fn func(byte, []byte) bool) {
+func (s *sharedSession) setSend(fn func(byte, []byte) bool, conn net.Conn) {
 	s.mu.Lock()
 	s.sendFn = fn
+	s.conn = conn
 	s.mu.Unlock()
 }
 
 func (s *sharedSession) clearSend() {
 	s.mu.Lock()
 	s.sendFn = nil
+	s.conn = nil
 	s.mu.Unlock()
+}
+
+func (s *sharedSession) markSwitched() {
+	s.mu.Lock()
+	s.switched = true
+	conn := s.conn
+	s.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (s *sharedSession) takeSwitched() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switched := s.switched
+	s.switched = false
+	return switched
 }
 
 // sendInputOrWake: if connected, forward the byte as MsgInput; if
@@ -793,6 +862,65 @@ type httpErrExit2 struct {
 }
 
 func (e *httpErrExit2) Error() string { return e.msg }
+
+// localDialer returns a dialFn for the local rpc.sock case.
+func localAttachTarget(stateDir, key string) attachTarget {
+	sockPath := filepath.Join(stateDir, key, "rpc.sock")
+	return attachTarget{
+		dial:  localDialer(sockPath),
+		label: attachLabel{Session: key, Host: "local"},
+		clone: func(ctx context.Context) (attachTarget, error) {
+			body, err := cloneLocalSession(ctx, stateDir, key)
+			if err != nil {
+				return attachTarget{}, err
+			}
+			return localAttachTarget(stateDir, body.Session.Key), nil
+		},
+	}
+}
+
+func remoteAttachTarget(remote *Remote, key string) attachTarget {
+	return attachTarget{
+		dial:  dialAttachRaw(remote, key),
+		label: attachLabel{Session: key, Host: remote.display},
+		clone: func(ctx context.Context) (attachTarget, error) {
+			body, err := cloneSessionRemote(remote, key, "", nil)
+			if err != nil {
+				return attachTarget{}, err
+			}
+			return remoteAttachTarget(remote, body.Session.Key), nil
+		},
+	}
+}
+
+func cloneLocalSession(ctx context.Context, stateDir, key string) (*cloneSessionResp, error) {
+	sockPath := filepath.Join(stateDir, key, "rpc.sock")
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return dialUnixSock(ctx, sockPath)
+		},
+	}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/clone", bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		return nil, remoteResponseError(resp)
+	}
+	var body cloneSessionResp
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, err
+	}
+	if body.StateFile == nil || body.Session.Key == "" {
+		return nil, errors.New("local clone: response missing session key")
+	}
+	return &body, nil
+}
 
 // localDialer returns a dialFn for the local rpc.sock case.
 func localDialer(sockPath string) dialFn {

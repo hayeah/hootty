@@ -89,6 +89,9 @@ hoot run     [--remote <url>] [--state-dir <dir>] [--key <key>] [--attach]
                   [--prefix-key <key>] -- <cmd> [args...]
 hoot list    [--remote <url>] [--state-dir <dir>]
 hoot resolve [--remote <url>] [--state-dir <dir>] <id-or-prefix>
+hoot clone   [--remote <url>] [--state-dir <dir>] [--key <new-key>]
+                  [--env NAME[=VALUE]] [--env-file <path>]
+                  [--attach|--detach] <id-or-prefix>
 hoot attach  [--remote <url>] [--state-dir <dir>] [--no-reconnect]
                   [--no-ascii-cinema-playback]
                   [--ascii-cinema-playback-window <duration>]
@@ -118,7 +121,9 @@ holds on disk). Pipe through `jq -s` if you want an array.
 `run` opens a PTY pair, forks an internal session process (with the
 master on fd 3 and stdio = slave), and serves the mux on
 `<dir>/<key>/rpc.sock`. The session holds a flock on `<dir>/<key>/`
-for the lifetime of the managed child.
+for the lifetime of the managed child. New state files include
+`session.argv` and `session.cwd`; remove old state dirs when upgrading
+across this schema change.
 
 Each session directory also contains `pty.cast`, an asciicast v2 JSONL
 recording with a header line followed by output (`"o"`) and resize
@@ -142,6 +147,33 @@ Anywhere a session key is accepted (including `resolve`), you can pass
 either the full id or any unique prefix (minimum 3 characters,
 case-insensitive). Ambiguous prefixes fail with an error listing the
 matching ids; this is what makes the random ids ergonomic to use.
+
+### `hoot clone`
+
+`clone` spawns a fresh sibling session in the same state dir using the
+source session's recorded `session.argv` and `session.cwd`. It does not
+fork the running child and does not copy a live PTY; it repeats the
+original spawn now.
+
+```sh
+hoot clone abc
+hoot clone --key work2 abc
+hoot clone --attach abc
+hoot clone --env FEATURE=on --env-file .env.clone abc
+hoot clone --remote ssh://devbox abc
+```
+
+The cloned process inherits from the new `hoot __session` environment
+at clone time and then goes through the usual child env cleanup
+(`TMUX`/`TMUX_PANE` stripped, `TERM=xterm-256color`). `--env NAME=VALUE`
+sets a one-shot override for the clone; `--env NAME` copies `NAME` from
+the cloning CLI process; `--env-file` loads simple `NAME=VALUE` lines.
+Overrides are not persisted to state and are not replayed by
+clone-of-clone unless passed again.
+
+Bare `hoot clone` is detached by default and prints the new key on
+stdout, matching `hoot run`. `--attach` switches into the cloned
+session after creation.
 
 ### `hoot attach`
 
@@ -218,6 +250,7 @@ collide with tmux's `C-b`). Override via `--prefix-key C-a`,
 | `<prefix> .`          | detach (clean exit 0)                             |
 | `<prefix> ^`          | send literal prefix byte to remote                |
 | `<prefix> Ctrl-Z`     | suspend `hoot attach` (SIGTSTP; `fg` resumes) |
+| `<prefix> c`          | clone current session and attach to the clone     |
 | `<prefix> ?`          | print one-line help on stderr, stay attached      |
 
 Exit codes: `0` clean detach, `1` protocol/dial error, `2` argument
@@ -281,6 +314,7 @@ Routes (mounted at the bare path and — if `--prefix` is set — at
 | GET    | `/sessions`                 | `{sessions: [{...StateFile, alive}]}`                            |
 | POST   | `/sessions`                 | `{cmd \| argv, key?}` → forks `hoot __session`            |
 | GET    | `/sessions/{key}`           | state.json (alias of `/state`)                                  |
+| POST   | `/sessions/{key}/clone`     | `{key?, env?}` → forks a sibling from `session.argv`/`cwd`       |
 | GET    | `/sessions/{key}/resolve`   | resolve full id or unique prefix                                |
 | DELETE | `/sessions/{key}`           | SIGTERM the session by pid (204)                              |
 | GET    | `/sessions/{key}/state`     | state.json                                                       |

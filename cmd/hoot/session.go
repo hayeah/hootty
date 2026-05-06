@@ -28,6 +28,7 @@ func cmdSession(args []string) error {
 	fs := flag.NewFlagSet("__session", flag.ContinueOnError)
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
 	key := fs.String("key", "", "session key (required)")
+	cwd := fs.String("cwd", "", "original working directory")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -37,6 +38,9 @@ func cmdSession(args []string) error {
 	rest := fs.Args()
 	if len(rest) == 0 {
 		return errors.New("__session: missing command after --")
+	}
+	if *cwd == "" {
+		return errors.New("--cwd is required")
 	}
 
 	// Session stderr is the PTY slave; the library's slog
@@ -91,13 +95,17 @@ func cmdSession(args []string) error {
 	defer ptyImpl.Close()
 
 	svc := &RunCmdService{
-		Cmd:  rest[0],
-		Args: rest[1:],
+		Cmd:      rest[0],
+		Args:     rest[1:],
+		StateDir: *stateDir,
+		Key:      *key,
 	}
 
 	run := session.New(session.SessionConfig{
 		StateDir: *stateDir,
 		Key:      *key,
+		Argv:     rest,
+		CWD:      *cwd,
 		Service:  svc,
 		PTY:      ptyImpl,
 	})

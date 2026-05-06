@@ -33,6 +33,8 @@ func main() {
 		err = cmdResolve(args)
 	case "attach":
 		os.Exit(cmdAttach(args))
+	case "clone":
+		err = cmdClone(args)
 	case "serve":
 		err = cmdServe(args)
 	case "__session":
@@ -79,6 +81,9 @@ Usage:
                     [--prefix-key <key>] -- <cmd> [args...]
   hoot list    [--remote <url>] [--state-dir <d>]
   hoot resolve [--remote <url>] [--state-dir <d>] <id-or-prefix>
+  hoot clone   [--remote <url>] [--state-dir <d>] [--key <new-key>]
+                    [--env NAME[=VALUE]] [--env-file <path>]
+                    [--attach|--detach] <id-or-prefix>
   hoot attach  [--remote <url>] [--state-dir <d>] [--no-reconnect]
                     [--no-ascii-cinema-playback]
                     [--prefix-key <key>] <id-or-prefix>

@@ -36,6 +36,8 @@ var chdirMu sync.Mutex
 type SessionConfig struct {
 	StateDir string
 	Key      string
+	Argv     []string
+	CWD      string
 	Service  Service
 	PTY      *LibghosttyPTY
 }
@@ -118,6 +120,8 @@ func (r *Runner) Run(ctx context.Context) error {
 			Key:       r.cfg.Key,
 			PID:       os.Getpid(),
 			CreatedAt: time.Now(),
+			Argv:      append([]string(nil), r.cfg.Argv...),
+			CWD:       r.cfg.CWD,
 		},
 	}
 

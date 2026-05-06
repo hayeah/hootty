@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,6 +82,8 @@ func TestRunnerRunsServiceAndSignalsCancellation(t *testing.T) {
 	runner := New(SessionConfig{
 		StateDir: dir,
 		Key:      "demo",
+		Argv:     []string{"bash", "-lc", "echo hi"},
+		CWD:      "/tmp/hoot-demo",
 		Service:  svc,
 		PTY:      ptyImpl,
 	})
@@ -111,6 +114,12 @@ func TestRunnerRunsServiceAndSignalsCancellation(t *testing.T) {
 	}
 	if sf.Session.PID == 0 {
 		t.Errorf("expected session.pid to be set, got 0")
+	}
+	if strings.Join(sf.Session.Argv, "\x00") != "bash\x00-lc\x00echo hi" {
+		t.Errorf("got session.argv=%q, want bash/-lc/echo hi", sf.Session.Argv)
+	}
+	if sf.Session.CWD != "/tmp/hoot-demo" {
+		t.Errorf("got session.cwd=%q, want /tmp/hoot-demo", sf.Session.CWD)
 	}
 	var stateBlob map[string]string
 	if err := json.Unmarshal(sf.State, &stateBlob); err != nil {
