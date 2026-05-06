@@ -20,6 +20,8 @@ type spawnSpec struct {
 	Rows         uint16
 }
 
+var hootExecutable = os.Executable
+
 func (s spawnSpec) normalized() spawnSpec {
 	if s.Cols == 0 {
 		s.Cols = 80
@@ -56,7 +58,7 @@ func spawnSessionFromSpec(stateDir, key string, spec spawnSpec) (string, error) 
 		return "", fmt.Errorf("setsize: %w", err)
 	}
 
-	self, err := os.Executable()
+	self, err := hootExecutable()
 	if err != nil {
 		_ = master.Close()
 		_ = slave.Close()

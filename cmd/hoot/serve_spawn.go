@@ -106,6 +106,41 @@ func (s *serveState) createSession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *serveState) handleClone(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	key := r.PathValue("key")
+	if key == "" {
+		http.Error(w, "missing session key", http.StatusBadRequest)
+		return
+	}
+	var body cloneSessionReq
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	resp, err := cloneSession(s.store, s.stateDir, key, body.Key, body.Env)
+	if err != nil {
+		writeCloneError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func writeCloneError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errCloneKeyAlive) {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeResolveError(w, err)
+}
+
 // closeSession is DELETE /sessions/{key}. Sends SIGTERM to the
 // session's pid; the library handles the rest (drain children,
 // release flock, exit cleanly). Returns 204 once the signal is

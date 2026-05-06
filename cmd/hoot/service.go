@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -46,6 +48,9 @@ func (s *RunCmdService) cmdString() string {
 func (s *RunCmdService) Run(ctx context.Context, super session.Session) error {
 	if s.Cmd == "" {
 		return errors.New("RunCmdService: Cmd is required")
+	}
+	if s.StateDir != "" && s.Key != "" {
+		super.Mux().HandleFunc("/clone", s.handleClone)
 	}
 
 	started := time.Now().UTC().Format(time.RFC3339)
@@ -101,6 +106,28 @@ func (s *RunCmdService) Run(ctx context.Context, super session.Session) error {
 	}
 	_ = super.UpdateState(state)
 	return nil
+}
+
+func (s *RunCmdService) handleClone(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body cloneSessionReq
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	resp, err := cloneSession(session.NewStore(s.StateDir), s.StateDir, s.Key, body.Key, body.Env)
+	if err != nil {
+		writeCloneError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // sanitizeChildEnv strips TMUX/TMUX_PANE and forces TERM=xterm-
