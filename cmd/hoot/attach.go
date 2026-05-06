@@ -580,71 +580,47 @@ func runSession(
 //	<prefix> ?       print one-line help on stderr
 //	<prefix> c       clone current session and switch to it
 func runStdinFSM(ctx context.Context, prefix byte, shared *sharedSession, cancel context.CancelFunc, clone func(context.Context) error, stderr io.Writer) {
-	type readResult struct {
-		b   byte
-		err error
-	}
-	readCh := make(chan readResult, 1)
+	readCh := make(chan byteOrErr, 1)
 	go func() {
 		buf := make([]byte, 1)
 		for {
 			n, err := os.Stdin.Read(buf)
 			if n > 0 {
-				readCh <- readResult{buf[0], nil}
+				readCh <- byteOrErr{buf[0], nil}
 			}
 			if err != nil {
-				readCh <- readResult{0, err}
+				readCh <- byteOrErr{0, err}
 				return
 			}
 		}
 	}()
 
-	const (
-		stateNormal    = 0
-		stateAfterPref = 1
-	)
-	state := stateNormal
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case rr := <-readCh:
-			if rr.err != nil {
-				return
-			}
-			b := rr.b
-			switch state {
-			case stateNormal:
-				if b == prefix {
-					state = stateAfterPref
-					continue
-				}
+	act := fsmActions{
+		forwardBytes: func(bs []byte) {
+			for _, b := range bs {
 				shared.sendInputOrWake(b)
-			case stateAfterPref:
-				switch b {
-				case '^':
-					// Literal prefix: send if connected, drop if not
-					// (no wake — this is data, not a "user is here" signal).
-					shared.sendIfConnected(attachwire.MsgInput, []byte{prefix})
-				case '.':
-					cancel()
-					return
-				case 0x1a: // Ctrl-Z: suspend self, resume with fg
-					_ = syscall.Kill(os.Getpid(), syscall.SIGTSTP)
-				case '?':
-					fmt.Fprintln(stderr,
-						"\r\nhoot attach commands: \".\" detach, \"^\" literal prefix, \"Ctrl-Z\" suspend, \"c\" clone, \"?\" help\r")
-				case 'c':
-					if err := clone(ctx); err != nil {
-						fmt.Fprintf(stderr, "\r\n\x1b[2m[hoot: clone failed: %v]\x1b[0m\r\n", err)
-					}
-				default:
-					// silent ignore
-				}
-				state = stateNormal
 			}
-		}
+		},
+		literal: func() {
+			// Literal prefix: send if connected, drop if not (no wake —
+			// this is data, not a "user is here" signal).
+			shared.sendIfConnected(attachwire.MsgInput, []byte{prefix})
+		},
+		detach: func() {
+			cancel()
+		},
+		suspend: func() {
+			_ = syscall.Kill(os.Getpid(), syscall.SIGTSTP)
+		},
+		help: func() {
+			fmt.Fprintln(stderr,
+				"\r\nhoot attach commands: \".\" detach, \"^\" literal prefix, \"Ctrl-Z\" suspend, \"c\" clone, \"?\" help\r")
+		},
+		clone: func() error {
+			return clone(ctx)
+		},
 	}
+	runChordFSM(prefix, readByteFromChan(ctx, readCh), act, stderr)
 }
 
 // runServerLoop reads frames from the server and dispatches them.
