@@ -35,6 +35,8 @@ func main() {
 		os.Exit(cmdAttach(args))
 	case "clone":
 		err = cmdClone(args)
+	case "kill":
+		err = cmdKill(args)
 	case "serve":
 		err = cmdServe(args)
 	case "__session":
@@ -87,6 +89,7 @@ Usage:
   hoot attach  [--remote <url>] [--state-dir <d>] [--no-reconnect]
                     [--no-ascii-cinema-playback]
                     [--prefix-key <key>] <id-or-prefix>
+  hoot kill    [--remote <url>] [--state-dir <d>] [-s SIG] <id-or-prefix>
   hoot serve   [--state-dir <d>] --bind <host:port|unix:/path.sock> [--prefix /api]
 
 The session state directory is <state-dir>/<key>/. The session
