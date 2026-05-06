@@ -181,8 +181,7 @@ func (s *serveState) handleAttach(w http.ResponseWriter, r *http.Request) {
 	defer upstream.conn.Close()
 
 	helloPayload, _ := json.Marshal(attachwire.Hello{
-		Cols: 80,
-		Rows: 24,
+		Size: attachwire.PTYSize{Cols: 80, Rows: 24},
 	})
 	if err := attachwire.WriteFrame(upstream.conn, attachwire.MsgHello, helloPayload); err != nil {
 		_ = wsConn.Close(websocket.StatusInternalError, "hello: "+err.Error())

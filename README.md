@@ -92,6 +92,7 @@ hoot clone   [--remote <url>] [--state-dir <dir>] [--key <new-key>]
 hoot attach  [--remote <url>] [--state-dir <dir>] [--no-reconnect]
                   [--prefix-key <key>] <id-or-prefix>
 hoot kill    [--remote <url>] [--state-dir <dir>] [-s <signal>] <id-or-prefix>
+hoot detach  [--remote <url>] [--state-dir <dir>] <session-prefix>[/<attachment-prefix>]
 hoot serve   [--state-dir <dir>] --bind <host:port|unix:/path.sock> [--prefix /api]
 ```
 
@@ -206,6 +207,41 @@ prefix (case-insensitive), or a small positive integer.
 Exit codes: `0` delivered, `1` I/O error, `2` usage / unknown signal,
 `3` no such session or ambiguous prefix, `5` session exists but child
 not running.
+
+### `hoot detach`
+
+`detach` force-closes one or all attachments on a session — the
+admin counterpart to `<prefix>.` from inside an attach. The
+positional argument is either a bare session prefix (close every
+attachment on that session) or a `<sess>/<att>` pair (close one
+specific attachment). Both halves accept full ids or unique
+prefixes.
+
+```sh
+hoot detach abc                # close every attachment on session "abc"
+hoot detach abc/x9k            # close just attachment "x9k" on "abc"
+hoot detach --remote ssh://devbox abc/x9k
+```
+
+Each attachment carries a short id minted at Hello time and stored
+in `state.json` under `session.attachments[]` along with the
+client-reported `cols×rows` and best-effort origin metadata
+(`host`, `term`, `term_program`, `term_program_version`, `user`).
+`hoot list` surfaces the same data so you can pick the attachment
+to target. The id namespace is per-session: two sessions can
+coincidentally mint the same short id without conflict, which is
+why the CLI requires the session-qualified `<sess>/<att>` form.
+
+Mechanism: the CLI issues `DELETE /attachments` (close-all) or
+`DELETE /attachments/{id}` on the session's `rpc.sock` (local) or
+the equivalent route on a `hoot serve` multiplexer (remote). The
+supervisor closes the underlying conn after pushing a final yellow
+`[detached by hoot detach]` notice through the wire, so the user
+on the detached terminal sees a reason rather than a silent EOF.
+
+Exit codes: `0` detach delivered, `1` I/O error, `2` usage error,
+`3` no such session/attachment or ambiguous prefix, `5` session
+exists but is not alive.
 
 ### `hoot attach`
 

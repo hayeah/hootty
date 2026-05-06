@@ -25,19 +25,24 @@ import (
 // One handler instance is shared by all attaches; per-attach state
 // lives in the goroutine that runs serveOne.
 type attachHandler struct {
-	pty *LibghosttyPTY
-	set *AttachSet
+	pty      *LibghosttyPTY
+	set      *AttachSet
+	registry *attachRegistry
 }
 
 // newAttachHandler constructs a handler bound to the given PTY. The
 // AttachSet's sizeApplier resizes the PTY's master + emulator (which
-// is the entire point of the multi-attach min-wins negotiation).
-func newAttachHandler(pty *LibghosttyPTY) *attachHandler {
-	h := &attachHandler{pty: pty}
+// is the entire point of the multi-attach min-wins negotiation) and
+// also persists the effective size to state.json via the registry.
+func newAttachHandler(pty *LibghosttyPTY, registry *attachRegistry) *attachHandler {
+	h := &attachHandler{pty: pty, registry: registry}
 	h.set = NewAttachSet(func(cols, rows uint16) {
 		// Don't propagate errors — Resize logs internally. A failed
 		// resize doesn't invalidate the attach.
 		_ = pty.Resize(cols, rows)
+		if registry != nil {
+			registry.SetEffectiveSize(attachwire.PTYSize{Cols: cols, Rows: rows})
+		}
 	})
 	return h
 }
@@ -88,6 +93,12 @@ func (h *attachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// detachReason is the yellow notice the supervisor pushes onto the
+// wire just before force-closing a connection in response to
+// `hoot detach`. Wrapped in CSI 33 (yellow) so the user sees it as a
+// distinct admin action rather than a silent EOF.
+const detachReason = "\r\n\x1b[33m[detached by hoot detach]\x1b[0m\r\n"
+
 // serveOne is the per-attach run loop. It:
 //   - reads Hello
 //   - registers in AttachSet (which may resize the PTY + broadcast)
@@ -112,23 +123,30 @@ func (h *attachHandler) serveOne(conn io.ReadWriteCloser, bufrw *bufio.ReadWrite
 	if err := json.Unmarshal(payload, &hello); err != nil {
 		return fmt.Errorf("decode hello: %w", err)
 	}
-	if hello.Cols == 0 || hello.Rows == 0 {
-		return errors.New("hello: cols and rows must be positive")
+	if hello.Size.Cols == 0 || hello.Size.Rows == 0 {
+		return errors.New("hello: size cols and rows must be positive")
 	}
 
-	// Serialize all writes onto the connection through one channel +
-	// one goroutine. Output frames, Size frames, and the replay
-	// dump all go through this — no interleaved partial frames.
+	// Serialize all writes onto the connection. Frames from the
+	// drain goroutine flow through outCh + the writer goroutine; the
+	// supervisor's force-detach path writes its final notice
+	// directly using writeMu, which the writer goroutine also grabs
+	// per-frame. This way the "[detached by hoot detach]" message
+	// can land on the wire without racing the writer.
 	type outMsg struct {
 		typ     byte
 		payload []byte
 	}
 	outCh := make(chan outMsg, 256)
 	writerDone := make(chan error, 1)
+	var writeMu sync.Mutex
 	go func() {
 		var werr error
 		for m := range outCh {
-			if err := attachwire.WriteFrame(conn, m.typ, m.payload); err != nil {
+			writeMu.Lock()
+			err := attachwire.WriteFrame(conn, m.typ, m.payload)
+			writeMu.Unlock()
+			if err != nil {
 				werr = err
 				break
 			}
@@ -158,7 +176,7 @@ func (h *attachHandler) serveOne(conn io.ReadWriteCloser, bufrw *bufio.ReadWrite
 			send(attachwire.MsgSize, payload)
 		},
 	}
-	declared := attachWinsize{Cols: hello.Cols, Rows: hello.Rows}
+	declared := attachWinsize{Cols: hello.Size.Cols, Rows: hello.Size.Rows}
 	eff := h.set.Add(ac, declared)
 	defer h.set.Remove(ac)
 
@@ -168,6 +186,32 @@ func (h *attachHandler) serveOne(conn io.ReadWriteCloser, bufrw *bufio.ReadWrite
 	{
 		payload, _ := json.Marshal(attachwire.Size{Cols: eff.Cols, Rows: eff.Rows})
 		send(attachwire.MsgSize, payload)
+	}
+
+	// Register in the supervisor-wide attachment registry. closeFn
+	// is what `hoot detach` will trigger from outside: write the
+	// "[detached by hoot detach]" notice synchronously (under
+	// writeMu so the writer goroutine doesn't interleave), then
+	// close the conn so clientReadLoop's next ReadFrame returns
+	// and serveOne unwinds.
+	var closeOnce sync.Once
+	forcedDetach := func() {
+		closeOnce.Do(func() {
+			writeMu.Lock()
+			_ = attachwire.WriteFrame(conn, attachwire.MsgOutput, []byte(detachReason))
+			writeMu.Unlock()
+			_ = conn.Close()
+		})
+	}
+
+	var attachID string
+	if h.registry != nil {
+		id, regErr := h.registry.Add(hello.Size, hello.Origin, forcedDetach)
+		if regErr != nil {
+			return fmt.Errorf("registry add: %w", regErr)
+		}
+		attachID = id
+		defer h.registry.Remove(attachID)
 	}
 
 	// Subscribe to live atomically with snapshotting the screen. Both

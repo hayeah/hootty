@@ -122,8 +122,8 @@ func TestCmdRunRemoteAttachSpawnsThenAttaches(t *testing.T) {
 
 	select {
 	case hello := <-helloCh:
-		if hello.Cols == 0 || hello.Rows == 0 {
-			t.Fatalf("Hello cols/rows = %dx%d, want non-zero", hello.Cols, hello.Rows)
+		if hello.Size.Cols == 0 || hello.Size.Rows == 0 {
+			t.Fatalf("Hello.Size = %+v, want non-zero cols/rows", hello.Size)
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("timed out waiting for Hello")

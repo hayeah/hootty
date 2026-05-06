@@ -38,10 +38,7 @@ func cmdRun(args []string) error {
 	if len(rest) == 0 {
 		return errors.New("run: missing command after --")
 	}
-	attachOpts, err := attachOptionsFromFlags(
-		*prefixSpec,
-		*noReconnect,
-	)
+	attachOpts, err := attachOptionsFromFlags(*prefixSpec, *noReconnect)
 	if err != nil {
 		return fmt.Errorf("run: %w", err)
 	}
