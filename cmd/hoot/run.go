@@ -89,10 +89,9 @@ func cmdRun(args []string) error {
 			return nil
 		}
 		exitCode, err := runAttachLoop(
-			dialAttachRaw(remote, sessionKey),
+			remoteAttachTarget(remote, sessionKey),
 			attachOpts.PrefixByte,
 			!attachOpts.NoReconnect,
-			attachLabel{Session: sessionKey, Host: remote.display},
 			attachOpts.Playback,
 		)
 		if exitCode != 0 || err != nil {
@@ -125,13 +124,12 @@ func cmdRun(args []string) error {
 	if err != nil {
 		return fmt.Errorf("getcwd: %w", err)
 	}
-	sockPath, err := spawnSessionFromSpec(*stateDir, *key, spawnSpec{
+	if _, err := spawnSessionFromSpec(*stateDir, *key, spawnSpec{
 		Argv: rest,
 		CWD:  cwd,
 		Cols: cols,
 		Rows: rows,
-	})
-	if err != nil {
+	}); err != nil {
 		return fmt.Errorf("run: session did not start: %w", err)
 	}
 
@@ -141,10 +139,9 @@ func cmdRun(args []string) error {
 		return nil
 	}
 	exitCode, err := runAttachLoop(
-		localDialer(sockPath),
+		localAttachTarget(*stateDir, *key),
 		attachOpts.PrefixByte,
 		false,
-		attachLabel{Session: *key, Host: "local"},
 		attachOpts.Playback,
 	)
 	if exitCode != 0 || err != nil {
