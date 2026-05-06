@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	libghostty "github.com/mitchellh/go-libghostty"
 )
 
 // TestLibghosttyPTYFormatters smoke-tests Format{Text,HTML,VT} after
@@ -113,6 +114,27 @@ func TestLibghosttyPTYSnapshotPartsSplitScrollbackAndScreen(t *testing.T) {
 		if !strings.Contains(string(screen), want) {
 			t.Fatalf("screen missing %q: %q", want, screen)
 		}
+	}
+}
+
+func TestFormatTerminalSnapshotIncludesKeyboardModes(t *testing.T) {
+	term, err := libghostty.NewTerminal(libghostty.WithSize(80, 24))
+	if err != nil {
+		t.Fatalf("NewTerminal: %v", err)
+	}
+	defer term.Close()
+
+	term.VTWrite([]byte("\x1b[>4;2m\x1b[>1uhello"))
+
+	snap, err := formatTerminalSnapshot(term)
+	if err != nil {
+		t.Fatalf("formatTerminalSnapshot: %v", err)
+	}
+	if !strings.Contains(string(snap), "\x1b[>4;2m") {
+		t.Fatalf("snapshot missing modifyOtherKeys state: %q", snap)
+	}
+	if !strings.Contains(string(snap), "\x1b[=1;1u") {
+		t.Fatalf("snapshot missing kitty keyboard state: %q", snap)
 	}
 }
 

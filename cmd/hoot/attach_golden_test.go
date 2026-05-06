@@ -152,12 +152,13 @@ func startAttachWithPlayback(t *testing.T, remote *attachetest.Remote, local *at
 	ctx, cancel := context.WithCancel(context.Background())
 	shared := &sharedSession{wake: make(chan struct{}, 1)}
 	var attached atomic.Bool
+	modeTracker := &terminalModeTracker{}
 	done := make(chan error, 1)
 	go func() {
 		done <- runSession(ctx, conn, cols, rows, shared, attachLabel{Session: session, Host: "local"}, &attached, attachWriters{
 			stdout: local,
 			stderr: io.Discard,
-		}, playback)
+		}, playback, modeTracker)
 	}()
 	deadline := time.Now().Add(2 * time.Second)
 	for !attached.Load() {
@@ -183,7 +184,7 @@ func startAttachWithPlayback(t *testing.T, remote *attachetest.Remote, local *at
 			t.Fatalf("timed out waiting for attach session to end")
 		}
 		if attached.Load() {
-			emitDetach(local, attachLabel{Session: session, Host: "local"})
+			emitDetach(local, attachLabel{Session: session, Host: "local"}, modeTracker)
 		}
 	}
 }
@@ -225,7 +226,7 @@ func TestRunSessionHeartbeatClosesIdleConnection(t *testing.T) {
 	err := runSession(ctx, clientConn, 80, 24, shared, attachLabel{Session: "idle", Host: "test"}, &attached, attachWriters{
 		stdout: io.Discard,
 		stderr: io.Discard,
-	}, attachPlaybackConfig{})
+	}, attachPlaybackConfig{}, &terminalModeTracker{})
 	if err == nil {
 		t.Fatalf("runSession err = nil, want idle connection error")
 	}

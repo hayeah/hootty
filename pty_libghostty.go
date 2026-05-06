@@ -489,6 +489,8 @@ func formatTerminalSnapshot(term *libghostty.Terminal) ([]byte, error) {
 		libghostty.WithFormatterExtraCursor(true),
 		libghostty.WithFormatterExtraStyle(true),
 		libghostty.WithFormatterExtraModes(true),
+		libghostty.WithFormatterExtraKeyboard(true),
+		libghostty.WithFormatterExtraKittyKeyboard(true),
 	)
 	if err != nil {
 		return nil, err
