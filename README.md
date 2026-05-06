@@ -111,8 +111,15 @@ hoot serve   [--state-dir <dir>] --bind <host:port|unix:/path.sock> [--prefix /a
   forward a local Unix socket to it, and then use the same HTTP API.
 
 The ssh transport inherits the user's OpenSSH config, agent,
-ProxyJump, hardware-key, and ControlMaster behavior. `hoot` must be in
-the remote login shell's `PATH`; no persistent remote server is required.
+ProxyJump, hardware-key, and ControlMaster behavior. `hoot` uses a
+stable hashed `ControlPath` for each `user@host:port`, so a long-running
+remote attach keeps the OpenSSH master connection warm and later
+one-shot commands to the same target reuse that master transparently.
+Those later commands still create their own short-lived mux client,
+forward socket, and remote `hoot serve`, but they do not need a fresh
+SSH handshake/authentication while the master is alive. `hoot` must be
+in the remote login shell's `PATH`; no persistent remote server is
+required.
 
 `hoot list` emits JSONL — one line per session, each line a
 serialized `session.StateFile` (the same shape `<dir>/<key>/state.json`
@@ -266,7 +273,12 @@ Bare `host:port` is accepted as sugar for `http://host:port`.
 With `--remote ssh://host`, the local CLI starts a short-lived remote
 `hoot serve` over OpenSSH and forwards a local Unix socket to it. The
 remote only needs `hoot` in `PATH`; the user does not start `hoot serve`
-by hand.
+by hand. OpenSSH ControlMaster reuse is opportunistic: if another
+`hoot` process, such as a long-running remote `attach`, already has a
+healthy master connection for the same `user@host:port`, a new `list`,
+`resolve`, `run`, or `clone` opens a new mux channel over that master.
+If no master exists, the one-shot command opens one itself and still
+works standalone.
 
 ```sh
 hoot list --remote ssh://devbox
