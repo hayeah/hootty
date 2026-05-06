@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -23,7 +24,21 @@ type RunCmdService struct {
 	Args     []string
 	StateDir string
 	Key      string
+
+	// child holds the live *exec.Cmd between Start and Wait so the
+	// /signal handler can deliver a signal to the supervised PID
+	// when the PTY's tcgetpgrp lookup fails. nil before Start and
+	// after Wait returns.
+	child atomic.Pointer[exec.Cmd]
+
+	// session is captured at Run entry so handleSignal can reach
+	// PTY().SignalForeground without going through a closure.
+	session atomic.Pointer[sessionRef]
 }
+
+// sessionRef is a tiny wrapper so atomic.Pointer can hold an
+// interface (atomic.Pointer requires a concrete pointer type).
+type sessionRef struct{ s session.Session }
 
 type runState struct {
 	State     string `json:"state"`
@@ -49,6 +64,9 @@ func (s *RunCmdService) Run(ctx context.Context, super session.Session) error {
 	if s.Cmd == "" {
 		return errors.New("RunCmdService: Cmd is required")
 	}
+	s.session.Store(&sessionRef{s: super})
+	defer s.session.Store(nil)
+	super.Mux().HandleFunc("/signal", s.handleSignal)
 	if s.StateDir != "" && s.Key != "" {
 		super.Mux().HandleFunc("/clone", s.handleClone)
 	}
@@ -78,6 +96,9 @@ func (s *RunCmdService) Run(ctx context.Context, super session.Session) error {
 	}
 	cmd.WaitDelay = 5 * time.Second
 
+	s.child.Store(cmd)
+	defer s.child.Store(nil)
+
 	if err := cmd.Start(); err != nil {
 		state.State = "exited"
 		state.ExitCode = -1
@@ -106,6 +127,79 @@ func (s *RunCmdService) Run(ctx context.Context, super session.Session) error {
 	}
 	_ = super.UpdateState(state)
 	return nil
+}
+
+// signalRequest is the JSON body of POST /signal: {"signal": "TERM"}.
+// The "signal" field accepts a name (with or without SIG prefix,
+// case-insensitive) or a small positive integer.
+type signalRequest struct {
+	Signal string `json:"signal"`
+}
+
+// handleSignal routes a POST /signal RPC into a foreground-pgrp
+// kill(2). Falls back to signaling the supervised child PID if the
+// PTY reports no foreground process group (ErrNoForeground).
+//
+// Status codes:
+//
+//	204 — signal delivered
+//	400 — bad body / unparseable signal name
+//	405 — non-POST
+//	409 — child not running yet (or already exited) and no fg pgrp
+//	500 — kill(2) failed for any other reason
+func (s *RunCmdService) handleSignal(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body signalRequest
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	name := body.Signal
+	if name == "" {
+		name = "TERM"
+	}
+	sig, err := parseSignal(name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Preferred path: deliver to the PTY's current foreground pgrp.
+	if ref := s.session.Load(); ref != nil {
+		if pty := ref.s.PTY(); pty != nil {
+			err := pty.SignalForeground(sig)
+			if err == nil {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			if !errors.Is(err, session.ErrNoForeground) {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			// fall through to direct-PID fallback
+		}
+	}
+
+	// Fallback: signal the supervised child directly.
+	cmd := s.child.Load()
+	if cmd == nil || cmd.Process == nil {
+		http.Error(w, "child not running", http.StatusConflict)
+		return
+	}
+	if err := cmd.Process.Signal(sig); err != nil {
+		if errors.Is(err, os.ErrProcessDone) {
+			http.Error(w, "child already exited", http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *RunCmdService) handleClone(w http.ResponseWriter, r *http.Request) {
