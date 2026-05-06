@@ -19,6 +19,8 @@ import (
 	"time"
 )
 
+const maxUnixSocketPathLen = 80
+
 type Config struct {
 	User     string
 	Host     string
@@ -54,6 +56,9 @@ func Open(ctx context.Context, cfg Config) (*Tunnel, error) {
 	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
 		return nil, fmt.Errorf("mkdir tunnel state dir: %w", err)
 	}
+	if err := os.MkdirAll(filepath.Dir(ControlPath(cfg.StateDir, cfg.User, cfg.Host, cfg.Port)), 0o700); err != nil {
+		return nil, fmt.Errorf("mkdir ssh control dir: %w", err)
+	}
 
 	home, err := remoteHome(ctx, cfg)
 	if err != nil {
@@ -64,6 +69,9 @@ func Open(ctx context.Context, cfg Config) (*Tunnel, error) {
 		return nil, err
 	}
 	plan := BuildPlan(cfg, id, home)
+	if err := os.MkdirAll(filepath.Dir(plan.LocalSocket), 0o700); err != nil {
+		return nil, fmt.Errorf("mkdir local forward dir: %w", err)
+	}
 	if err := os.Remove(plan.LocalSocket); err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("remove stale local socket: %w", err)
 	}
@@ -109,16 +117,20 @@ func (t *Tunnel) Close() error {
 			return
 		}
 		_ = syscall.Kill(-t.cmd.Process.Pid, syscall.SIGTERM)
-		select {
-		case <-t.done:
-		case <-time.After(time.Second):
-			_ = t.cmd.Process.Kill()
-			<-t.done
-		}
 		if len(t.cleanupArgs) > 0 {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			_ = exec.CommandContext(ctx, "ssh", t.cleanupArgs...).Run()
 			cancel()
+		}
+		select {
+		case <-t.done:
+		case <-time.After(time.Second):
+			_ = t.cmd.Process.Kill()
+			select {
+			case <-t.done:
+			case <-time.After(time.Second):
+				t.closeErr = fmt.Errorf("ssh tunnel did not exit after SIGTERM/SIGKILL")
+			}
 		}
 		_ = os.Remove(t.localSocket)
 	})
@@ -138,7 +150,7 @@ func BuildPlan(cfg Config, id, remoteHome string) Plan {
 	return Plan{
 		Target:        target,
 		ControlPath:   ControlPath(cfg.StateDir, cfg.User, cfg.Host, cfg.Port),
-		LocalSocket:   filepath.Join(cfg.StateDir, "fwd-"+safeHost+"-"+fmt.Sprint(os.Getpid())+"-"+id+".sock"),
+		LocalSocket:   localSocketPath(cfg.StateDir, safeHost, id),
 		RemoteSocket:  path.Join(remoteHome, ".hoot", ".tunnels", id+".sock"),
 		RemoteBind:    fmt.Sprintf("127.0.0.1:%d", port),
 		ForwardTarget: fmt.Sprintf("127.0.0.1:%d", port),
@@ -178,7 +190,12 @@ func remoteServeScript(remoteBind, remotePID string) string {
 
 func ControlPath(stateDir, user, host, port string) string {
 	sum := sha256.Sum256([]byte(controlKey(user, host, port)))
-	return filepath.Join(stateDir, "cm-"+hex.EncodeToString(sum[:4]))
+	name := "cm-" + hex.EncodeToString(sum[:4])
+	candidate := filepath.Join(stateDir, name)
+	if len(candidate) <= maxUnixSocketPathLen {
+		return candidate
+	}
+	return filepath.Join(shortControlDir(), name)
 }
 
 func controlKey(user, host, port string) string {
@@ -190,6 +207,31 @@ func controlKey(user, host, port string) string {
 		key += ":" + port
 	}
 	return key
+}
+
+func shortControlDir() string {
+	return shortSocketDir("ssh-control", "hootty-ssh-control-"+fmt.Sprint(os.Getuid()), "cm-00000000")
+}
+
+func localSocketPath(stateDir, safeHost, id string) string {
+	name := "fwd-" + safeHost + "-" + fmt.Sprint(os.Getpid()) + "-" + id + ".sock"
+	candidate := filepath.Join(stateDir, name)
+	if len(candidate) <= maxUnixSocketPathLen {
+		return candidate
+	}
+	sum := sha256.Sum256([]byte(name))
+	shortName := "fwd-" + hex.EncodeToString(sum[:8]) + ".sock"
+	return filepath.Join(shortSocketDir("ssh-forward", "hootty-ssh-forward-"+fmt.Sprint(os.Getuid()), shortName), shortName)
+}
+
+func shortSocketDir(cacheName, tmpName, sampleName string) string {
+	if dir, err := os.UserCacheDir(); err == nil && dir != "" {
+		candidate := filepath.Join(dir, "hootty", cacheName)
+		if len(filepath.Join(candidate, sampleName)) <= maxUnixSocketPathLen {
+			return candidate
+		}
+	}
+	return filepath.Join(os.TempDir(), tmpName)
 }
 
 func remoteHome(ctx context.Context, cfg Config) (string, error) {

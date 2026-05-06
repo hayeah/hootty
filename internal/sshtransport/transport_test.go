@@ -30,6 +30,47 @@ func TestControlPathIsShortAndStable(t *testing.T) {
 	}
 }
 
+func TestControlPathFallsBackForLongStateDir(t *testing.T) {
+	stateDir := filepath.Join("/Users/me", strings.Repeat("very-long-workspace-", 8), ".hoot", ".tunnels")
+	a := ControlPath(stateDir, "me", "devbox.example.internal", "2222")
+	b := ControlPath(stateDir, "me", "devbox.example.internal", "2222")
+	if a != b {
+		t.Fatalf("ControlPath unstable: %q != %q", a, b)
+	}
+	if filepath.Dir(a) == stateDir {
+		t.Fatalf("ControlPath stayed under long state dir: %q", a)
+	}
+	if len(a) > maxUnixSocketPathLen {
+		t.Fatalf("ControlPath length = %d, want <= %d: %s", len(a), maxUnixSocketPathLen, a)
+	}
+	if !strings.Contains(filepath.Base(a), "cm-") {
+		t.Fatalf("ControlPath base = %q, want cm-*", filepath.Base(a))
+	}
+}
+
+func TestBuildPlanFallsBackForLongLocalSocket(t *testing.T) {
+	stateDir := filepath.Join("/Users/me", strings.Repeat("very-long-workspace-", 8), ".hoot", ".tunnels")
+	cfg := Config{
+		User:     "me",
+		Host:     "devbox.example.internal",
+		Port:     "2222",
+		StateDir: stateDir,
+	}
+	plan := BuildPlan(cfg, strings.Repeat("a", 32), "/home/me")
+	if filepath.Dir(plan.LocalSocket) == stateDir {
+		t.Fatalf("LocalSocket stayed under long state dir: %q", plan.LocalSocket)
+	}
+	if len(plan.LocalSocket) > maxUnixSocketPathLen {
+		t.Fatalf("LocalSocket length = %d, want <= %d: %s", len(plan.LocalSocket), maxUnixSocketPathLen, plan.LocalSocket)
+	}
+	if plan.ControlPath == "" {
+		t.Fatalf("ControlPath empty")
+	}
+	if plan.LocalSocket == "" {
+		t.Fatalf("LocalSocket empty")
+	}
+}
+
 func TestTunnelArgsShape(t *testing.T) {
 	cfg := Config{
 		User:     "me",
@@ -66,6 +107,19 @@ func TestTunnelArgsShape(t *testing.T) {
 	}
 	if plan.RemotePID != "/home/me/.hoot/.tunnels/012345.pid" {
 		t.Fatalf("RemotePID = %q", plan.RemotePID)
+	}
+
+	cleanup := strings.Join(CleanupArgs(cfg, plan), "\n")
+	for _, want := range []string{
+		"ControlMaster=auto",
+		"ControlPath=" + plan.ControlPath,
+		"ControlPersist=60",
+		"me@devbox",
+		"/home/me/.hoot/.tunnels/012345.pid",
+	} {
+		if !strings.Contains(cleanup, want) {
+			t.Fatalf("CleanupArgs missing %q in:\n%s", want, cleanup)
+		}
 	}
 }
 
