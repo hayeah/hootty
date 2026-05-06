@@ -79,15 +79,13 @@ func usage() {
 
 Usage:
   hoot run     [--remote <url>] [--state-dir <d>] [--key <k>] [--attach]
-                    [--no-reconnect] [--no-ascii-cinema-playback]
-                    [--prefix-key <key>] -- <cmd> [args...]
+                    [--no-reconnect] [--prefix-key <key>] -- <cmd> [args...]
   hoot list    [--remote <url>] [--state-dir <d>]
   hoot resolve [--remote <url>] [--state-dir <d>] <id-or-prefix>
   hoot clone   [--remote <url>] [--state-dir <d>] [--key <new-key>]
                     [--env NAME[=VALUE]] [--env-file <path>]
                     [--attach|--detach] <id-or-prefix>
   hoot attach  [--remote <url>] [--state-dir <d>] [--no-reconnect]
-                    [--no-ascii-cinema-playback]
                     [--prefix-key <key>] <id-or-prefix>
   hoot kill    [--remote <url>] [--state-dir <d>] [-s SIG] <id-or-prefix>
   hoot serve   [--state-dir <d>] --bind <host:port|unix:/path.sock> [--prefix /api]

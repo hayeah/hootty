@@ -47,11 +47,8 @@ const MaxPayload = 1 << 24 // 16 MiB
 // Hello is the first frame the client sends. The server answers
 // with Output frames (and a Size{} broadcast); there is no Welcome.
 type Hello struct {
-	Cols                             uint16   `json:"cols"`
-	Rows                             uint16   `json:"rows"`
-	AsciiCinemaPlayback              *bool    `json:"ascii_cinema_playback,omitempty"`
-	AsciiCinemaPlaybackWindowSeconds *float64 `json:"ascii_cinema_playback_window_seconds,omitempty"`
-	AsciiCinemaPlaybackSpeed         *float64 `json:"ascii_cinema_playback_speed,omitempty"`
+	Cols uint16 `json:"cols"`
+	Rows uint16 `json:"rows"`
 }
 
 // Size is direction-overloaded. C→S: client declares its current

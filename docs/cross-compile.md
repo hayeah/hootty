@@ -102,6 +102,5 @@ ssh devbox '~/.local/bin/hoot serve --bind 0.0.0.0:21000 >/tmp/hoot-serve.log 2>
 (sleep 2; printf '\036.') | ./bin/hoot attach \
   --host devbox:21000 \
   --no-reconnect \
-  --no-ascii-cinema-playback \
   linuxsmoke
 ```

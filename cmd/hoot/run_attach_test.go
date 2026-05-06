@@ -99,9 +99,6 @@ func TestCmdRunRemoteAttachSpawnsThenAttaches(t *testing.T) {
 			"--remote", server.Listener.Addr().String(),
 			"--attach",
 			"--no-reconnect",
-			"--no-ascii-cinema-playback",
-			"--ascii-cinema-playback-window", "90s",
-			"--ascii-cinema-playback-speed", "3.5",
 			"--prefix-key", "C-a",
 			"--key", "abc123",
 			"--", "bash", "-lc", "echo hi",
@@ -125,14 +122,8 @@ func TestCmdRunRemoteAttachSpawnsThenAttaches(t *testing.T) {
 
 	select {
 	case hello := <-helloCh:
-		if hello.AsciiCinemaPlayback == nil || *hello.AsciiCinemaPlayback {
-			t.Fatalf("Hello.AsciiCinemaPlayback = %v, want false", hello.AsciiCinemaPlayback)
-		}
-		if hello.AsciiCinemaPlaybackWindowSeconds == nil || *hello.AsciiCinemaPlaybackWindowSeconds != 90 {
-			t.Fatalf("Hello.AsciiCinemaPlaybackWindowSeconds = %v, want 90", hello.AsciiCinemaPlaybackWindowSeconds)
-		}
-		if hello.AsciiCinemaPlaybackSpeed == nil || *hello.AsciiCinemaPlaybackSpeed != 3.5 {
-			t.Fatalf("Hello.AsciiCinemaPlaybackSpeed = %v, want 3.5", hello.AsciiCinemaPlaybackSpeed)
+		if hello.Cols == 0 || hello.Rows == 0 {
+			t.Fatalf("Hello cols/rows = %dx%d, want non-zero", hello.Cols, hello.Rows)
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("timed out waiting for Hello")
@@ -140,7 +131,7 @@ func TestCmdRunRemoteAttachSpawnsThenAttaches(t *testing.T) {
 }
 
 func TestAttachOptionsFromFlags(t *testing.T) {
-	opts, err := attachOptionsFromFlags("C-a", true, true, 2*time.Minute, 4)
+	opts, err := attachOptionsFromFlags("C-a", true)
 	if err != nil {
 		t.Fatalf("attachOptionsFromFlags: %v", err)
 	}
@@ -150,19 +141,7 @@ func TestAttachOptionsFromFlags(t *testing.T) {
 	if !opts.NoReconnect {
 		t.Fatalf("NoReconnect = false, want true")
 	}
-	if opts.Playback.Enabled {
-		t.Fatalf("Playback.Enabled = true, want false")
-	}
-	if opts.Playback.Window != 2*time.Minute || opts.Playback.Speed != 4 {
-		t.Fatalf("Playback = %+v", opts.Playback)
-	}
-	if _, err := attachOptionsFromFlags("x", false, false, time.Second, 1); err == nil {
+	if _, err := attachOptionsFromFlags("x", false); err == nil {
 		t.Fatalf("attachOptionsFromFlags accepted printable prefix")
-	}
-	if _, err := attachOptionsFromFlags("C-a", false, false, -time.Second, 1); err == nil {
-		t.Fatalf("attachOptionsFromFlags accepted negative playback window")
-	}
-	if _, err := attachOptionsFromFlags("C-a", false, false, time.Second, 0); err == nil {
-		t.Fatalf("attachOptionsFromFlags accepted non-positive playback speed")
 	}
 }

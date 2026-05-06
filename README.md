@@ -83,19 +83,13 @@ Plus the always-present library routes:
 
 ```sh
 hoot run     [--remote <url>] [--state-dir <dir>] [--key <key>] [--attach]
-                  [--no-reconnect] [--no-ascii-cinema-playback]
-                  [--ascii-cinema-playback-window <duration>]
-                  [--ascii-cinema-playback-speed <float>]
-                  [--prefix-key <key>] -- <cmd> [args...]
+                  [--no-reconnect] [--prefix-key <key>] -- <cmd> [args...]
 hoot list    [--remote <url>] [--state-dir <dir>]
 hoot resolve [--remote <url>] [--state-dir <dir>] <id-or-prefix>
 hoot clone   [--remote <url>] [--state-dir <dir>] [--key <new-key>]
                   [--env NAME[=VALUE]] [--env-file <path>]
                   [--attach|--detach] <id-or-prefix>
 hoot attach  [--remote <url>] [--state-dir <dir>] [--no-reconnect]
-                  [--no-ascii-cinema-playback]
-                  [--ascii-cinema-playback-window <duration>]
-                  [--ascii-cinema-playback-speed <float>]
                   [--prefix-key <key>] <id-or-prefix>
 hoot kill    [--remote <url>] [--state-dir <dir>] [-s <signal>] <id-or-prefix>
 hoot serve   [--state-dir <dir>] --bind <host:port|unix:/path.sock> [--prefix /api]
@@ -148,7 +142,7 @@ session immediately after spawn readiness. Detaching with
 running `hoot run -- ...` followed by `hoot attach <key>`. With
 `--remote`, the session is spawned through the remote `hoot serve`
 transport and the attach phase uses that same transport. The attach
-phase accepts the same playback, prefix-key, and reconnect flags as
+phase accepts the same prefix-key and reconnect flags as
 `hoot attach`; `--no-reconnect` only affects remote attach.
 
 Anywhere a session key is accepted (including `resolve`), you can pass
@@ -258,24 +252,22 @@ the cursor, clears only the viewport, and prints
 `[disconnected. <session> @ <host>]` before exiting. None of these
 cleanup bytes are written to the remote PTY or other attached clients.
 
-Asciicast playback is enabled by default on the first attach and is
-inserted after the visible-screen phase and before live output. The
-default window is the last 5 minutes of output, replayed at 8x with
-long idle gaps capped so attach reaches live promptly. Override with
-`--ascii-cinema-playback-window <duration>` (`0` = full cast) and
-`--ascii-cinema-playback-speed <float>`, or skip it entirely with
-`--no-ascii-cinema-playback`. Remote reconnects do not replay the cast
-again; they repaint with the phased snapshot and go straight to live.
+Attach restores recent context via the libghostty snapshot — the
+emulator's parsed grid (scrollback + visible viewport, with cursor,
+SGR, and mode state) is serialized as VT-replayable bytes and
+repainted on the attaching terminal. The asciicast playback path
+that used to re-stream raw recorded bytes after the snapshot was
+removed: it visibly re-animated past TUI frames (cursor moves,
+alt-screen toggles, in-place updates) on top of an already-correct
+snapshot. The recorder still writes `pty.cast` to disk for offline
+tooling.
 
 The previous `--no-full-replay` flag and the alternative `pty.log`
-replay arm were removed. Replaying raw `pty.log` re-issued every
-terminal-query escape the child ever sent (`DA`, `DSR`, `OSC 11 ?`,
-…) which the user's real terminal would dutifully answer back into
-the child's stdin — the same root cause as the live "junk chars
+replay arm were also removed. Replaying raw recorded bytes re-issued
+every terminal-query escape the child ever sent (`DA`, `DSR`, `OSC
+11 ?`, …) which the user's real terminal would dutifully answer back
+into the child's stdin — the same root cause as the live "junk chars
 after tmux detach" symptom, just spread across the whole session.
-The recorder now writes `pty.cast` for offline playback; attach playback
-filters its output through the same terminal-query stripper used by live
-fanout before bytes reach the user's real terminal.
 
 Live fanout strips terminal-query escape sequences before sending
 to the user's real terminal (the libghostty emulator on the
