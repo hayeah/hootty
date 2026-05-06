@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -173,6 +177,59 @@ func (s *serveState) closeSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleSignal is POST /sessions/{key}/signal. Resolves the key
+// via the store (full id or unique prefix), then forwards the
+// request body to the upstream rpc.sock's /signal route, mirroring
+// status code and body back to the client.
+func (s *serveState) handleSignal(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	query := r.PathValue("key")
+	if query == "" {
+		http.Error(w, "missing session key", http.StatusBadRequest)
+		return
+	}
+	state, err := s.store.Resolve(query)
+	if err != nil {
+		writeResolveError(w, err)
+		return
+	}
+	sockPath := filepath.Join(s.stateDir, state.Session.Key, "rpc.sock")
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 8192))
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _ string, _ string) (net.Conn, error) {
+			return dialSock(ctx, sockPath)
+		},
+	}}
+	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, "http://unix/signal", io.NopCloser(strings.NewReader(string(body))))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if ct := r.Header.Get("Content-Type"); ct != "" {
+		upstream.Header.Set("Content-Type", ct)
+	} else {
+		upstream.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := client.Do(upstream)
+	if err != nil {
+		http.Error(w, "upstream: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 // splitCmd is a small shell-ish tokenizer: whitespace separates
