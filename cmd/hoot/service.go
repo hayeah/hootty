@@ -137,6 +137,12 @@ func (s *RunCmdService) handleClone(w http.ResponseWriter, r *http.Request) {
 // emits tmux-native title escapes that libghostty doesn't parse.)
 func sanitizeChildEnv(parent []string) []string {
 	const childTerm = "xterm-256color"
+	// TMUX / TMUX_PANE: powerlevel10k checks these to decide it's
+	// nested inside tmux and emits tmux-private title escapes
+	// (ESC-k ... ESC-\) that libghostty doesn't parse, so they render
+	// as literal text. Strip them so p10k stays in xterm mode.
+	// TERM: dropped so we can force xterm-256color below; otherwise
+	// a parent TERM=tmux-256color would have the same effect on p10k.
 	drop := map[string]bool{
 		"TMUX":      true,
 		"TMUX_PANE": true,
