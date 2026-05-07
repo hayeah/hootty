@@ -55,6 +55,15 @@ func TestHootRestorer_E2EClearsCatalogueModes(t *testing.T) {
 	var attached atomic.Bool
 	restorer := &hootRestorer{}
 
+	// Mirror runAttachLoop's lifecycle: Attach BEFORE the session starts,
+	// so the kitty kbd push frame is owned by hoot before any snapshot
+	// bytes paint. (The real runAttachLoop does this between term.MakeRaw
+	// and runConnectLoop; this test bypasses runAttachLoop and goes
+	// straight to runSession, so we replicate the call here.)
+	if err := restorer.Attach(local); err != nil {
+		t.Fatalf("restorer.Attach: %v", err)
+	}
+
 	done := make(chan error, 1)
 	go func() {
 		done <- runSession(ctx, conn, 80, 24, shared, attachLabel{Session: "e2e", Host: "local"}, &attached, attachWriters{
