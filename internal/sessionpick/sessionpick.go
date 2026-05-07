@@ -70,6 +70,64 @@ func Format(sm SessionWithMeta) string {
 	}, "\t")
 }
 
+// HUDMaxCmdLen is the maximum number of runes from the joined argv
+// surfaced in a HUD line. Beyond this we cut on a rune boundary and
+// append a single "…" so the line stays within most terminal widths.
+const HUDMaxCmdLen = 60
+
+// FormatHUD renders a one-line, human-readable summary of a session
+// for use in the terminal title and the `<prefix> ?` status chord.
+// It uses the same field-extraction as Format but drops the picker
+// markers (no `[id]` brackets, no `@local`, no `*attached` tag) and
+// prefixes the brand owl. Truncates the argv at HUDMaxCmdLen runes.
+//
+// Field order:
+//
+//	🦉 <id> [@host] <cwd> [<cmd...>]
+//
+// `@host` is omitted when the session is local (host empty or
+// "local"). Trailing `<cmd...>` is omitted when argv is empty.
+//
+// All fields are space-separated; no tabs, no control bytes. Safe
+// to drop into an OSC 2 title sequence and to print as raw text.
+func FormatHUD(sm SessionWithMeta) string {
+	if sm.State == nil {
+		return ""
+	}
+	st := sm.State.Session
+
+	parts := []string{"🦉", st.Key}
+
+	host := sm.Host
+	if host != "" && host != "local" {
+		parts = append(parts, "@"+host)
+	}
+
+	if cwd := tildify(st.CWD); cwd != "" {
+		parts = append(parts, cwd)
+	}
+
+	if cmd := truncateRunes(strings.Join(st.Argv, " "), HUDMaxCmdLen); cmd != "" {
+		parts = append(parts, cmd)
+	}
+
+	return strings.Join(parts, " ")
+}
+
+// truncateRunes returns s if its rune length is <= max, otherwise
+// the first max-1 runes followed by "…" (so the total rune length
+// stays <= max). max <= 0 returns "".
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max-1]) + "…"
+}
+
 // tildify replaces a leading $HOME with ~ for compactness.
 // Best-effort: if $HOME isn't set, the path is returned unchanged.
 func tildify(p string) string {

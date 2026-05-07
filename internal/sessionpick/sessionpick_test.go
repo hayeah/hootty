@@ -2,6 +2,7 @@ package sessionpick
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,6 +72,81 @@ func TestFormat(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFormatHUD(t *testing.T) {
+	t.Setenv("HOME", "/Users/me")
+
+	longArgv := []string{"bash", "-c", strings.Repeat("x ", 60)} // ~120 chars joined
+
+	tests := []struct {
+		name string
+		sm   SessionWithMeta
+		want string
+	}{
+		{
+			name: "local session drops @host marker",
+			sm:   mk("a3fxx", "/Users/me/proj/api", []string{"bash", "--login"}, false, true, "local"),
+			want: "🦉 a3fxx ~/proj/api bash --login",
+		},
+		{
+			name: "remote session keeps @host",
+			sm:   mk("rm0bb", "/srv", []string{"top"}, false, true, "user@m4mini"),
+			want: "🦉 rm0bb @user@m4mini /srv top",
+		},
+		{
+			name: "empty host treated as local",
+			sm:   mk("hh1cc", "/x", []string{"sh"}, false, true, ""),
+			want: "🦉 hh1cc /x sh",
+		},
+		{
+			name: "missing argv is omitted (no trailing space)",
+			sm:   mk("nox00", "/Users/me", nil, false, true, "local"),
+			want: "🦉 nox00 ~",
+		},
+		{
+			name: "long argv truncated with single ellipsis rune",
+			sm:   mk("trnc1", "/x", longArgv, false, true, "local"),
+			// Cmd field capped at HUDMaxCmdLen (60) runes including the
+			// trailing "…". 8 chars of "bash -c " + 25 "x " pairs + "x" + "…" = 60.
+			want: "🦉 trnc1 /x bash -c x x x x x x x x x x x x x x x x x x x x x x x x x x…",
+		},
+		{
+			name: "wide unicode in cwd survives intact",
+			sm:   mk("uniq1", "/Users/me/プロジェクト", []string{"sh"}, false, true, "local"),
+			want: "🦉 uniq1 ~/プロジェクト sh",
+		},
+		{
+			name: "spaces in argv are preserved",
+			sm:   mk("spc01", "/x", []string{"sh", "-c", "echo hi"}, false, true, "local"),
+			want: "🦉 spc01 /x sh -c echo hi",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := FormatHUD(tc.sm)
+			if got != tc.want {
+				t.Errorf("FormatHUD =\n  %q\nwant\n  %q", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("nil state returns empty", func(t *testing.T) {
+		if got := FormatHUD(SessionWithMeta{}); got != "" {
+			t.Errorf("FormatHUD(empty) = %q, want \"\"", got)
+		}
+	})
+
+	t.Run("truncation is rune-safe (no split mid-rune)", func(t *testing.T) {
+		// Argv whose joined string lands the truncation boundary inside
+		// a multi-byte rune. We assert no replacement-rune ('�')
+		// appears in the output.
+		sm := mk("rune1", "/x", []string{strings.Repeat("é", 200)}, false, true, "local")
+		got := FormatHUD(sm)
+		if strings.ContainsRune(got, '�') {
+			t.Errorf("FormatHUD produced replacement rune: %q", got)
+		}
+	})
 }
 
 func TestIDResolve(t *testing.T) {
