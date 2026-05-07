@@ -31,8 +31,8 @@ import (
 // Flags:
 //
 //	--state-dir <d>   session state directory (default: ~/.hoot)
-//	--remote <url>    remote hoot serve URL (http://host:port,
-//	                  host:port, or ssh://host)
+//	--remote <url>    remote hoot serve URL (host, user@host, host:port
+//	                  — defaults to ssh://; or http(s)://host:port, ssh://host)
 //
 // Exit codes:
 //
@@ -58,7 +58,7 @@ Flags:
 `)
 	}
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
-	remoteFlag := fs.String("remote", "", "remote hoot serve URL (http://host:port, host:port, or ssh://host)")
+	remoteFlag := fs.String("remote", "", "remote hoot serve URL (host, user@host, host:port — defaults to ssh://; or http(s)://host:port, ssh://host)")
 	if err := fs.Parse(args); err != nil {
 		return &exitError{code: 2, err: err}
 	}

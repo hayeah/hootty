@@ -45,7 +45,7 @@ func parseRemoteFlag(raw, stateDir string) (*Remote, error) {
 		return nil, nil
 	}
 	if !strings.Contains(raw, "://") {
-		raw = "http://" + raw
+		raw = "ssh://" + raw
 	}
 	u, err := url.Parse(raw)
 	if err != nil {

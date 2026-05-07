@@ -27,7 +27,7 @@ func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
 	key := fs.String("key", "", "session key (default: random short id)")
-	remoteFlag := fs.String("remote", "", "remote hoot serve URL (http://host:port, host:port, or ssh://host)")
+	remoteFlag := fs.String("remote", "", "remote hoot serve URL (host, user@host, host:port — defaults to ssh://; or http(s)://host:port, ssh://host)")
 	attach := fs.Bool("attach", false, "attach to the new session after it starts")
 	noReconnect := fs.Bool("no-reconnect", false, "exit on first drop instead of auto-reconnecting during post-spawn attach (--remote only)")
 	prefixSpec := fs.String("prefix-key", "C-^", "command prefix byte for post-spawn attach (e.g. C-^, ^a, 0x1c)")

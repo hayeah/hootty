@@ -24,7 +24,10 @@ func TestParseRemoteFlag(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "empty", raw: "", display: ""},
-		{name: "bare hostport", raw: "m4mini:20000", kind: remoteKindHTTP, display: "http://m4mini:20000"},
+		{name: "bare host", raw: "m4mini", kind: remoteKindSSH, display: "ssh://m4mini", host: "m4mini"},
+		{name: "bare hostport", raw: "m4mini:20000", kind: remoteKindSSH, display: "ssh://m4mini:20000", host: "m4mini", port: "20000"},
+		{name: "bare user host", raw: "me@m4mini", kind: remoteKindSSH, display: "ssh://me@m4mini", user: "me", host: "m4mini"},
+		{name: "bare user host port", raw: "me@m4mini:2222", kind: remoteKindSSH, display: "ssh://me@m4mini:2222", user: "me", host: "m4mini", port: "2222"},
 		{name: "http", raw: "http://m4mini:20000/path?q=1", kind: remoteKindHTTP, display: "http://m4mini:20000"},
 		{name: "https", raw: "https://m4mini", kind: remoteKindHTTP, display: "https://m4mini"},
 		{name: "ssh host", raw: "ssh://devbox", kind: remoteKindSSH, display: "ssh://devbox", host: "devbox"},
@@ -68,7 +71,7 @@ func TestHTTPClientDialsRemoteAddress(t *testing.T) {
 	}))
 	defer server.Close()
 
-	r, err := parseRemoteFlag(server.Listener.Addr().String(), t.TempDir())
+	r, err := parseRemoteFlag("http://"+server.Listener.Addr().String(), t.TempDir())
 	if err != nil {
 		t.Fatalf("parseRemoteFlag: %v", err)
 	}
@@ -96,7 +99,7 @@ func TestDialAttachRawUsesRemotePath(t *testing.T) {
 	}))
 	defer server.Close()
 
-	r, err := parseRemoteFlag(server.Listener.Addr().String(), t.TempDir())
+	r, err := parseRemoteFlag("http://"+server.Listener.Addr().String(), t.TempDir())
 	if err != nil {
 		t.Fatalf("parseRemoteFlag: %v", err)
 	}

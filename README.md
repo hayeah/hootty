@@ -100,11 +100,14 @@ hoot serve   [--state-dir <dir>] --bind <host:port|unix:/path.sock> [--prefix /a
 
 `--remote` targets another host for session-facing subcommands:
 
-- `host:port`, `http://host:port`, `https://host:port` talk to a
-  running `hoot serve`.
-- `ssh://host`, `ssh://user@host`, `ssh://user@host:2222` shell out to
-  OpenSSH, start a per-invocation remote `hoot serve --bind unix:<sock>`,
-  forward a local Unix socket to it, and then use the same HTTP API.
+- `host`, `host:port`, `user@host`, `user@host:port`, or
+  `ssh://user@host:port` shell out to OpenSSH, start a per-invocation
+  remote `hoot serve --bind unix:<sock>`, forward a local Unix socket
+  to it, and then use the same HTTP API. A bare destination with no
+  URL scheme defaults to `ssh://`, so `hoot run --remote m4mini -- bash -l`
+  Just Works.
+- `http://host:port`, `https://host:port` talk to a running `hoot serve`
+  directly over HTTP.
 
 The ssh transport inherits the user's OpenSSH config, agent,
 ProxyJump, hardware-key, and ControlMaster behavior. `hoot` uses a
@@ -333,10 +336,15 @@ SIGINT/SIGTERM/SIGHUP we trapped.
 
 With `--remote http://host:port`, `list`, `resolve`, `run`, and
 `attach` talk to a running `hoot serve` instead of the local state dir.
-Bare `host:port` is accepted as sugar for `http://host:port`.
 
-With `--remote ssh://host`, the local CLI starts a short-lived remote
-`hoot serve` over OpenSSH and forwards a local Unix socket to it. The
+A `--remote` value with no URL scheme is treated as `ssh://` — so
+`--remote m4mini`, `--remote me@m4mini`, and `--remote me@m4mini:2222`
+all dial over ssh. Use an explicit `http://` / `https://` prefix to
+hit a running `hoot serve` directly.
+
+With `--remote ssh://host` (or any bare host shorthand), the local CLI
+starts a short-lived remote `hoot serve` over OpenSSH and forwards a
+local Unix socket to it. The
 remote only needs `hoot` in `PATH`; the user does not start `hoot serve`
 by hand. OpenSSH ControlMaster reuse is opportunistic: if another
 `hoot` process, such as a long-running remote `attach`, already has a

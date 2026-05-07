@@ -33,7 +33,7 @@ func cmdClone(args []string) error {
 	fs := flag.NewFlagSet("clone", flag.ContinueOnError)
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
 	key := fs.String("key", "", "new session key (default: random short id)")
-	remoteFlag := fs.String("remote", "", "remote hoot serve URL (http://host:port, host:port, or ssh://host)")
+	remoteFlag := fs.String("remote", "", "remote hoot serve URL (host, user@host, host:port — defaults to ssh://; or http(s)://host:port, ssh://host)")
 	attach := fs.Bool("attach", false, "attach to the cloned session after creating it")
 	detach := fs.Bool("detach", false, "do not attach after clone (default)")
 	var envSpecs stringListFlag

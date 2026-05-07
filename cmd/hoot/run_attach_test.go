@@ -96,7 +96,7 @@ func TestCmdRunRemoteAttachSpawnsThenAttaches(t *testing.T) {
 
 	out := captureStdout(t, func() {
 		err := cmdRun([]string{
-			"--remote", server.Listener.Addr().String(),
+			"--remote", "http://" + server.Listener.Addr().String(),
 			"--attach",
 			"--no-reconnect",
 			"--prefix-key", "C-a",
