@@ -90,7 +90,7 @@ hoot clone   [--remote <url>] [--state-dir <dir>] [--key <new-key>]
                   [--env NAME[=VALUE]] [--env-file <path>]
                   [--attach|--detach] <id-or-prefix>
 hoot attach  [--remote <url>] [--state-dir <dir>] [--no-reconnect]
-                  [--prefix-key <key>] <id-or-prefix>
+                  [--prefix-key <key>] [--strict] [<id-or-pattern>]
 hoot kill    [--remote <url>] [--state-dir <dir>] [-s <signal>] <id-or-prefix>
 hoot detach  [--remote <url>] [--state-dir <dir>] <session-prefix>[/<attachment-prefix>]
 hoot write   [--remote <url>] [--state-dir <dir>] [--paste] [--input-file FILE]
@@ -323,6 +323,58 @@ Exit codes: `0` write delivered, `1` I/O / unexpected server error,
 `\e[201~` / body too large, `3` no such session or ambiguous prefix.
 
 ### `hoot attach`
+
+#### Picker (no-args / fuzzy fallback)
+
+`hoot attach` with no positional argument launches an interactive
+fzf picker over the available sessions. The argv form is:
+
+```
+hoot attach                       # picker over all sessions
+hoot attach <id-prefix>           # exact id-prefix → attach (today's behavior)
+hoot attach <pattern>             # id-prefix first; on miss, fzf with --query=<pattern>
+                                  # --select-1 --exit-0 (unique fuzzy hit auto-attaches)
+hoot attach --strict <id-prefix>  # id-prefix only — no fzf, no picker (scripts)
+```
+
+Picker line format (tab-separated; the matcher sees everything from
+`[id]` rightward — the leading 1-based index column is hidden via
+`--with-nth=2..`):
+
+```
+1  [a3fxxx]  @local      ~/proj/api          bash --login          *attached
+2  [k7qzzz]  @m4mini     ~/Dropbox/notes     nvim spec.md
+3  [zz9aaa]  @local      ~/code/hootty       go test ./...         (dead)
+```
+
+Field markers double as natural fzf query prefixes:
+
+| query           | scope                                                |
+| --------------- | ---------------------------------------------------- |
+| `m4mini`        | substring anywhere                                   |
+| `@m4`           | host (since `@` only appears before the host token)  |
+| `[a3`           | id prefix                                            |
+| `*`             | live attached sessions only                          |
+| `'nvim`         | exact word-prefix match (fzf disables fuzzy)         |
+| `^[a3fxxx]`     | exact id (line-anchored)                             |
+| `!notes`        | negate                                               |
+| `nvim \| vim`   | OR                                                   |
+
+Sessions are sorted by spawn time ascending so the empty-query view
+shows the oldest first; `--no-sort` keeps that order until the user
+types something. Up/Down moves the cursor, Enter attaches, Esc / Ctrl-C
+cancels (exit 130).
+
+The picker requires `fzf` on `PATH`; missing fzf prints a one-line
+install hint and exits 2. `--strict` bypasses the picker entirely
+for scripted use.
+
+For `--remote`, the picker runs **client-side**: hoot fetches the
+session list from the remote `hoot serve` via `GET /sessions`, and
+fzf runs locally on the user's machine — the remote box does not
+need fzf installed.
+
+#### Pipe semantics
 
 `attach` connects the local terminal to a running session as a
 "dumb pipe with two side-channels": stdin → PTY master, master →
