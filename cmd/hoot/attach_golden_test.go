@@ -121,13 +121,13 @@ func startAttach(t *testing.T, remote *attachetest.Remote, local *attachetest.Lo
 	ctx, cancel := context.WithCancel(context.Background())
 	shared := &sharedSession{wake: make(chan struct{}, 1)}
 	var attached atomic.Bool
-	modeTracker := &terminalModeTracker{}
+	restorer := &hootRestorer{}
 	done := make(chan error, 1)
 	go func() {
 		done <- runSession(ctx, conn, cols, rows, shared, attachLabel{Session: session, Host: "local"}, &attached, attachWriters{
 			stdout: local,
 			stderr: io.Discard,
-		}, modeTracker)
+		}, restorer)
 	}()
 	deadline := time.Now().Add(2 * time.Second)
 	for !attached.Load() {
@@ -153,7 +153,7 @@ func startAttach(t *testing.T, remote *attachetest.Remote, local *attachetest.Lo
 			t.Fatalf("timed out waiting for attach session to end")
 		}
 		if attached.Load() {
-			emitDetach(local, attachLabel{Session: session, Host: "local"}, modeTracker)
+			emitDetach(local, attachLabel{Session: session, Host: "local"}, restorer)
 		}
 	}
 }
@@ -195,7 +195,7 @@ func TestRunSessionHeartbeatClosesIdleConnection(t *testing.T) {
 	err := runSession(ctx, clientConn, 80, 24, shared, attachLabel{Session: "idle", Host: "test"}, &attached, attachWriters{
 		stdout: io.Discard,
 		stderr: io.Discard,
-	}, &terminalModeTracker{})
+	}, &hootRestorer{})
 	if err == nil {
 		t.Fatalf("runSession err = nil, want idle connection error")
 	}

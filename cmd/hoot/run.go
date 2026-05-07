@@ -38,7 +38,7 @@ func cmdRun(args []string) error {
 	if len(rest) == 0 {
 		return errors.New("run: missing command after --")
 	}
-	attachOpts, err := attachOptionsFromFlags(*prefixSpec, *noReconnect)
+	attachOpts, err := attachOptionsFromFlags(*prefixSpec, *noReconnect, "hoot")
 	if err != nil {
 		return fmt.Errorf("run: %w", err)
 	}
@@ -84,6 +84,7 @@ func cmdRun(args []string) error {
 			attachOpts.PrefixByte,
 			!attachOpts.NoReconnect,
 			hud,
+			attachOpts.Restorer,
 		)
 		if exitCode != 0 || err != nil {
 			return &exitError{code: exitCode, err: err}
@@ -135,6 +136,7 @@ func cmdRun(args []string) error {
 		attachOpts.PrefixByte,
 		false,
 		hud,
+		attachOpts.Restorer,
 	)
 	if exitCode != 0 || err != nil {
 		return &exitError{code: exitCode, err: err}

@@ -149,7 +149,7 @@ func TestCmdRunRemoteAttachSpawnsThenAttaches(t *testing.T) {
 }
 
 func TestAttachOptionsFromFlags(t *testing.T) {
-	opts, err := attachOptionsFromFlags("C-a", true)
+	opts, err := attachOptionsFromFlags("C-a", true, "hoot")
 	if err != nil {
 		t.Fatalf("attachOptionsFromFlags: %v", err)
 	}
@@ -159,7 +159,13 @@ func TestAttachOptionsFromFlags(t *testing.T) {
 	if !opts.NoReconnect {
 		t.Fatalf("NoReconnect = false, want true")
 	}
-	if _, err := attachOptionsFromFlags("x", false); err == nil {
+	if opts.Restorer != "hoot" {
+		t.Fatalf("Restorer = %q, want %q", opts.Restorer, "hoot")
+	}
+	if _, err := attachOptionsFromFlags("x", false, "hoot"); err == nil {
 		t.Fatalf("attachOptionsFromFlags accepted printable prefix")
+	}
+	if _, err := attachOptionsFromFlags("C-a", false, "bogus"); err == nil {
+		t.Fatalf("attachOptionsFromFlags accepted unknown restorer")
 	}
 }
