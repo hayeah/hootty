@@ -90,7 +90,7 @@ hoot clone   [--remote <url>] [--state-dir <dir>] [--key <new-key>]
                   [--env NAME[=VALUE]] [--env-file <path>]
                   [--attach|--detach] [--strict] [<id-or-pattern>]
 hoot attach  [--remote <url>] [--state-dir <dir>] [--no-reconnect]
-                  [--prefix-key <key>] [--strict] [<id-or-pattern>]
+                  [--prefix-key <key>] [--strict] [--restorer <name>] [<id-or-pattern>]
 hoot kill    [--remote <url>] [--state-dir <dir>] [-s <signal>] [--strict] [<id-or-pattern>]
 hoot detach  [--remote <url>] [--state-dir <dir>] [--strict] [<session-prefix>[/<attachment-prefix>]]
 hoot write   [--remote <url>] [--state-dir <dir>] [--paste] [--input-file FILE]
@@ -438,14 +438,33 @@ delivered after subscribe carry no overlap with the snapshot.
 
 On attach, the server snapshot restores terminal mode state, including
 kitty keyboard and modify-other-keys state for TUIs that need richer
-key reports. If a snapshot applies kitty keyboard state, the client
-first creates a local stack frame so detach can pop only the frame hoot
-owns. On detach, the client locally unwinds observed kitty keyboard and
-modify-other-keys state, disables focus events, bracketed paste, and
-mouse tracking, then leaves alt screen defensively, resets SGR, shows
-the cursor, clears only the viewport, and prints
-`[disconnected. <session> @ <host>]` before exiting. None of these
-cleanup bytes are written to the remote PTY or other attached clients.
+key reports. The client claims a Hoot-owned kitty keyboard stack frame
+unconditionally on attach so the snapshot's kitty SET bytes land in
+that frame and detach can pop only what hoot pushed.
+
+On detach, the client emits a comprehensive cleanup sequence: kitty
+keyboard pop, modifyOtherKeys off, OSC 9;4;0 (Ghostty/ConEmu progress
+clear), and unconditional resets for every Ghostty mode that's safe to
+reset without a save/restore lease — every mouse mode (?9, ?1000-1006,
+?1015, ?1016), keyboard input modes (cursor keys, app keypad, focus
+events, bracketed paste, KAM, IRM, LNM, etc.), display modes (reverse
+colors, origin, wraparound, slow scroll, reverse wrap, 132-column,
+synchronized output, grapheme cluster, color-scheme reports, in-band
+size reports), layout (left-right margin, scroll region, cursor shape),
+charset (G0=ASCII), and all three alt-screen variants (?47, ?1047,
+?1049). Then SGR reset, cursor show, clear viewport, and the
+`[disconnected. <session> @ <host>]` banner. None of these cleanup
+bytes are written to the remote PTY or other attached clients.
+
+The detach cleanup is owned by a `TerminalRestorer` interface; pick
+between two implementations with `--restorer`:
+
+- `--restorer=hoot` (default) — the comprehensive cleanup above.
+- `--restorer=dtach` — tracks `crigler/dtach` upstream byte-for-byte:
+  clear-on-attach, cursor-show-on-detach, nothing else. Escape state
+  (kitty kbd, mouse modes, OSC progress, alt screen) intentionally
+  leaks across detach. Useful as an experimental control to compare
+  against the default; not for production use.
 
 Attach restores recent context via the libghostty snapshot — the
 emulator's parsed grid (scrollback + visible viewport, with cursor,
