@@ -44,20 +44,43 @@ const (
 // 16 MiB cap is comfortably above any realistic frame.
 const MaxPayload = 1 << 24 // 16 MiB
 
+// PTYSize is a {cols, rows} pair shared between the wire's Hello
+// frame and the on-disk SessionState / AttachmentRecord. One type
+// keeps wire ↔ state.json parity by construction.
+type PTYSize struct {
+	Cols uint16 `json:"cols"`
+	Rows uint16 `json:"rows"`
+}
+
+// Origin describes where a client is attaching from. All fields are
+// best-effort and may be empty; the supervisor stores a nil Origin
+// on the AttachmentRecord when every field is empty.
+type Origin struct {
+	Host               string `json:"host,omitempty"`
+	Term               string `json:"term,omitempty"`
+	TermProgram        string `json:"term_program,omitempty"`
+	TermProgramVersion string `json:"term_program_version,omitempty"`
+	User               string `json:"user,omitempty"`
+}
+
+// IsZero reports whether every Origin field is empty. Used by the
+// supervisor to decide whether to store a nil Origin pointer (and
+// thereby omit the JSON field from the AttachmentRecord).
+func (o Origin) IsZero() bool {
+	return o.Host == "" && o.Term == "" && o.TermProgram == "" && o.TermProgramVersion == "" && o.User == ""
+}
+
 // Hello is the first frame the client sends. The server answers
 // with Output frames (and a Size{} broadcast); there is no Welcome.
 type Hello struct {
-	Cols uint16 `json:"cols"`
-	Rows uint16 `json:"rows"`
+	Size   PTYSize `json:"size"`
+	Origin Origin  `json:"origin,omitempty"`
 }
 
 // Size is direction-overloaded. C→S: client declares its current
 // local terminal size. S→C: server reports the negotiated remote
 // PTY size after min-wins recompute.
-type Size struct {
-	Cols uint16 `json:"cols"`
-	Rows uint16 `json:"rows"`
-}
+type Size = PTYSize
 
 // WriteFrame writes a single TLV frame to w. Not safe for concurrent
 // use; callers serialize writes through a single goroutine.

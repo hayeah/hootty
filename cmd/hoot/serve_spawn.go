@@ -232,6 +232,67 @@ func (s *serveState) handleSignal(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, resp.Body)
 }
 
+// handleAttachments is DELETE /sessions/{key}/attachments — close
+// every attachment on the session. Resolves the key prefix locally
+// and proxies the DELETE through to the upstream rpc.sock.
+func (s *serveState) handleAttachments(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.proxyDelete(w, r, "/attachments")
+}
+
+// handleAttachmentByID is DELETE /sessions/{key}/attachments/{id} —
+// close one attachment by its short id.
+func (s *serveState) handleAttachmentByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "missing attachment id", http.StatusBadRequest)
+		return
+	}
+	s.proxyDelete(w, r, "/attachments/"+id)
+}
+
+// proxyDelete resolves the key prefix and forwards a DELETE to the
+// upstream rpc.sock at upstreamPath. Mirrors the dial pattern in
+// handleSignal.
+func (s *serveState) proxyDelete(w http.ResponseWriter, r *http.Request, upstreamPath string) {
+	query := r.PathValue("key")
+	if query == "" {
+		http.Error(w, "missing session key", http.StatusBadRequest)
+		return
+	}
+	state, err := s.store.Resolve(query)
+	if err != nil {
+		writeResolveError(w, err)
+		return
+	}
+	sockPath := filepath.Join(s.stateDir, state.Session.Key, "rpc.sock")
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _ string, _ string) (net.Conn, error) {
+			return dialSock(ctx, sockPath)
+		},
+	}}
+	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodDelete, "http://unix"+upstreamPath, nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	resp, err := client.Do(upstream)
+	if err != nil {
+		http.Error(w, "upstream: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+}
+
 // splitCmd is a small shell-ish tokenizer: whitespace separates
 // tokens, single- and double-quoted runs are grouped (with the
 // quotes stripped). No backslash escapes — to embed a quote, use

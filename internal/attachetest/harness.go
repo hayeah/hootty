@@ -49,6 +49,7 @@ func NewRemoteWithOptions(t testing.TB, cols, rows uint16, opts ...session.Libgh
 	}
 	mux := http.NewServeMux()
 	ptyImpl.RegisterRoutes(mux)
+	ptyImpl.RegisterAttachRoute(mux)
 	server := httptest.NewServer(mux)
 	r := &Remote{PTY: ptyImpl, slave: slave, master: master, server: server}
 	t.Cleanup(r.Close)

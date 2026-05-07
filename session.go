@@ -45,11 +45,12 @@ type SessionConfig struct {
 // Runner is the concrete session entry point. Implements the
 // Session interface that Service.Run receives.
 type Runner struct {
-	cfg    SessionConfig
-	writer *Writer
-	mux    *http.ServeMux
-	bus    *eventBus
-	log    *slog.Logger
+	cfg      SessionConfig
+	writer   *Writer
+	mux      *http.ServeMux
+	bus      *eventBus
+	log      *slog.Logger
+	registry *attachRegistry
 }
 
 // New creates a Runner from the given config. The Runner is not
@@ -115,6 +116,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	stateDir := filepath.Join(r.cfg.StateDir, r.cfg.Key)
+	cols, rows := r.cfg.PTY.Size()
 	initial := StateFile{
 		Session: SessionState{
 			Key:       r.cfg.Key,
@@ -122,6 +124,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			CreatedAt: time.Now(),
 			Argv:      append([]string(nil), r.cfg.Argv...),
 			CWD:       r.cfg.CWD,
+			Size:      PTYSize{Cols: cols, Rows: rows},
 		},
 	}
 
@@ -133,8 +136,10 @@ func (r *Runner) Run(ctx context.Context) error {
 	defer writer.Close()
 	r.log.Info("acquired flock", "dir", stateDir)
 
+	r.registry = newAttachRegistry(writer)
 	r.registerDefaultRoutes()
 	r.cfg.PTY.RegisterRoutes(r.mux)
+	r.registerAttachRoutes()
 
 	sock, err := r.listenSocket(stateDir)
 	if err != nil {
@@ -165,6 +170,51 @@ func (r *Runner) Run(ctx context.Context) error {
 func (r *Runner) registerDefaultRoutes() {
 	r.mux.HandleFunc("/state", r.handleState)
 	r.mux.HandleFunc("/events", r.handleEvents)
+}
+
+// registerAttachRoutes wires /attach (the attach upgrade endpoint)
+// and the supervisor-side /attachments[/{id}] DELETE routes onto
+// the mux. Split out from registerDefaultRoutes because all three
+// need access to the same attachRegistry instance.
+func (r *Runner) registerAttachRoutes() {
+	ah := newAttachHandler(r.cfg.PTY, r.registry)
+	r.mux.Handle("/attach", ah)
+	r.mux.HandleFunc("/attachments", r.handleAttachmentsRoot)
+	r.mux.HandleFunc("/attachments/{id}", r.handleAttachmentByID)
+}
+
+// handleAttachmentsRoot handles DELETE /attachments — close every
+// currently-connected attachment on this session. Used by `hoot
+// detach <session>`. Returns 204 with a JSON {"closed": n} body so
+// the CLI can report a count without reading state.json again.
+func (r *Runner) handleAttachmentsRoot(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	n := r.registry.CloseAll()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNoContent)
+	_, _ = fmt.Fprintf(w, `{"closed":%d}`, n)
+}
+
+// handleAttachmentByID handles DELETE /attachments/{id} — close a
+// single attachment. 404 if no such id is registered.
+func (r *Runner) handleAttachmentByID(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := req.PathValue("id")
+	if id == "" {
+		http.Error(w, "missing attachment id", http.StatusBadRequest)
+		return
+	}
+	if !r.registry.Close(id) {
+		http.Error(w, "no such attachment: "+id, http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleState returns the current StateFile as JSON.

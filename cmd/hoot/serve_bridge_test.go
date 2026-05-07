@@ -86,7 +86,7 @@ func TestHandleAttachRawRoundTrip(t *testing.T) {
 	resp.Body.Close()
 
 	// Send Hello + Input ("ping").
-	helloPayload, _ := json.Marshal(attachwire.Hello{Cols: 80, Rows: 24})
+	helloPayload, _ := json.Marshal(attachwire.Hello{Size: attachwire.PTYSize{Cols: 80, Rows: 24}})
 	if err := attachwire.WriteFrame(conn, attachwire.MsgHello, helloPayload); err != nil {
 		t.Fatalf("write Hello: %v", err)
 	}

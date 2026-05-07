@@ -86,10 +86,7 @@ retries forever. Press any key to wake the backoff and retry now.
 		return 2
 	}
 
-	attachOpts, err := attachOptionsFromFlags(
-		*prefixSpec,
-		*noReconnect,
-	)
+	attachOpts, err := attachOptionsFromFlags(*prefixSpec, *noReconnect)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hoot attach: %v\n", err)
 		return 2
@@ -457,8 +454,8 @@ func runSession(
 
 	// Hello.
 	helloPayload, _ := json.Marshal(attachwire.Hello{
-		Cols: cols,
-		Rows: rows,
+		Size:   attachwire.PTYSize{Cols: cols, Rows: rows},
+		Origin: localOrigin(),
 	})
 	if !send(attachwire.MsgHello, helloPayload) {
 		return errors.New("ctx cancelled before Hello")
@@ -1189,6 +1186,21 @@ func dialUnixSock(ctx context.Context, sockPath string) (net.Conn, error) {
 	}
 	defer os.Chdir(cwd)
 	return d.DialContext(ctx, "unix", filepath.Base(sockPath))
+}
+
+// localOrigin assembles the Origin metadata the client reports in
+// Hello: hostname + the usual TERM/$TERM_PROGRAM env vars + $USER.
+// Best-effort: any field that can't be read is left empty and
+// omitempty-elided over the wire.
+func localOrigin() attachwire.Origin {
+	host, _ := os.Hostname()
+	return attachwire.Origin{
+		Host:               host,
+		Term:               os.Getenv("TERM"),
+		TermProgram:        os.Getenv("TERM_PROGRAM"),
+		TermProgramVersion: os.Getenv("TERM_PROGRAM_VERSION"),
+		User:               os.Getenv("USER"),
+	}
 }
 
 // localSize returns local terminal cols/rows, or (0,0) if stdin is

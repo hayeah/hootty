@@ -692,8 +692,10 @@ func (p *LibghosttyPTY) SubscribeWithSnapshotParts() (<-chan []byte, []byte, []b
 func (p *LibghosttyPTY) Recorder() *Recorder { return p.rec }
 
 // RegisterRoutes contributes /pty/{text,html,vt,stream,input,resize}
-// and /attach to the session's mux. Runner.Run invokes this
-// automatically.
+// to the session's mux. Runner.Run invokes this automatically. The
+// /attach route is registered separately by the Runner so it can
+// thread the session writer (for attachment registry persistence)
+// into the handler.
 func (p *LibghosttyPTY) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/pty/text", p.handleText)
 	mux.HandleFunc("/pty/html", p.handleHTML)
@@ -701,11 +703,14 @@ func (p *LibghosttyPTY) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/pty/stream", p.handleStream)
 	mux.HandleFunc("/pty/input", p.handleInput)
 	mux.HandleFunc("/pty/resize", p.handleResize)
+}
 
-	// /attach upgrades to the binary attach protocol from
-	// internal/attachwire. One handler instance is shared by all
-	// attaches; per-attach state lives in the goroutine that runs
-	// serveOne.
-	ah := newAttachHandler(p)
-	mux.Handle("/attach", ah)
+// RegisterAttachRoute mounts a /attach handler on mux for embeddings
+// that drive a PTY without going through Runner.Run (test harnesses,
+// one-off pty experiments). The Runner uses a richer
+// registry-persisted variant; this exists so attachetest can keep
+// using `RegisterRoutes` + `RegisterAttachRoute` without depending
+// on a full session.
+func (p *LibghosttyPTY) RegisterAttachRoute(mux *http.ServeMux) {
+	mux.Handle("/attach", newAttachHandler(p, nil))
 }
