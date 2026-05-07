@@ -145,11 +145,14 @@ retries forever. Press any key to wake the backoff and retry now.
 	return exitCode
 }
 
-// stoutIsTTY reports whether stdout is connected to a terminal. We
+// stdoutIsTTY reports whether stdout is connected to a terminal. We
 // gate the picker on stdout (not stdin) because fzf opens /dev/tty
 // itself for keyboard, but it draws on whatever stdout points to —
 // no point launching it for output that's being piped or redirected.
-func stdoutIsTTY() bool {
+//
+// var so tests can swap it (the real os.Stdout always reports !tty
+// under `go test`).
+var stdoutIsTTY = func() bool {
 	return term.IsTerminal(int(os.Stdout.Fd()))
 }
 
