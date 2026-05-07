@@ -23,10 +23,7 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/hayeah/hootty"
 	"github.com/hayeah/hootty/internal/attachwire"
-	"github.com/hayeah/hootty/internal/sessionpick"
-	"github.com/hayeah/hootty/internal/shortid"
 )
 
 // cmdAttach implements `hoot attach`. Two transports:
@@ -128,7 +125,7 @@ retries forever. Press any key to wake the backoff and retry now.
 		reconnect = !attachOpts.NoReconnect
 	}
 
-	key, code, err := resolveAttachKey(arg, *strict, remote, *stateDir)
+	key, code, err := resolveSessionKey(arg, *strict, remote, *stateDir, pickerOptions{Verb: "attach"})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hoot attach: %v\n", err)
 		return code
@@ -146,135 +143,6 @@ retries forever. Press any key to wake the backoff and retry now.
 		fmt.Fprintf(os.Stderr, "hoot attach: %v\n", err)
 	}
 	return exitCode
-}
-
-// resolveAttachKey returns the session key to attach to. It implements
-// the routing matrix from spec.md:
-//
-//   - --strict: id-prefix only (server resolves for --remote, store
-//     resolves locally). Empty arg + --strict is an error.
-//   - 0 args + tty: load list, run fzf picker (no preseed)
-//   - 0 args + no tty: error, exit 2
-//   - 1 arg: try IDResolve client-side; on unique → return; on
-//     ambiguous → surface (id beats fuzzy); on no-match → fzf with
-//     --query=arg --select-1 --exit-0 (tty only).
-//
-// On error, the second return is the process exit code to use.
-func resolveAttachKey(arg string, strict bool, remote *Remote, stateDir string) (string, int, error) {
-	if strict {
-		if arg == "" {
-			return "", 2, fmt.Errorf("--strict requires a session id")
-		}
-		if remote != nil {
-			// Existing behavior: server resolves. attach-raw will
-			// 404/409 if the id is bad and we'll surface that as exit 2.
-			return arg, 0, nil
-		}
-		store := session.NewStore(stateDir)
-		state, err := store.Resolve(arg)
-		if err != nil {
-			return "", 2, err
-		}
-		return state.Session.Key, 0, nil
-	}
-
-	hasTTY := stdoutIsTTY()
-	if arg == "" && !hasTTY {
-		return "", 2, fmt.Errorf("no session id given; tty required for picker")
-	}
-
-	states, err := loadSessionList(remote, stateDir)
-	if err != nil {
-		return "", 1, err
-	}
-	if len(states) == 0 {
-		return "", 2, fmt.Errorf("no sessions to attach to")
-	}
-
-	if arg != "" {
-		sm, err := sessionpick.IDResolve(states, arg)
-		if err == nil {
-			return sm.State.Session.Key, 0, nil
-		}
-		var amb *shortid.AmbiguousIDError
-		if errors.As(err, &amb) {
-			// Id beats fuzzy on collision: surface the existing
-			// ambiguity error instead of falling through.
-			return "", 2, err
-		}
-		// IDNotFoundError or IDTooShortError → fall through to fzf.
-		if !hasTTY {
-			return "", 2, fmt.Errorf("no session matched %q (tty required for picker)", arg)
-		}
-	}
-
-	key, err := runFZFPicker(states, arg)
-	switch {
-	case err == nil:
-		return key, 0, nil
-	case errors.Is(err, errFZFNotFound):
-		return "", 2, fmt.Errorf("fzf not found on PATH; install fzf (`brew install fzf` / `apt install fzf`) or pass --strict <id>")
-	case errors.Is(err, errPickerCancelled):
-		return "", 130, fmt.Errorf("picker cancelled")
-	case errors.Is(err, errPickerNoMatch):
-		if arg != "" {
-			return "", 2, fmt.Errorf("no session matched %q", arg)
-		}
-		return "", 2, fmt.Errorf("no session selected")
-	default:
-		return "", 1, err
-	}
-}
-
-// loadSessionList loads the candidate sessions for the picker. For
-// --remote it issues GET /sessions (which already returns the
-// `alive` flag); locally it walks the state directory and probes each
-// dir's flock for liveness.
-func loadSessionList(remote *Remote, stateDir string) ([]sessionpick.SessionWithMeta, error) {
-	if remote != nil {
-		resp, err := httpClient(remote).Get("http://hoot/sessions")
-		if err != nil {
-			return nil, err
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return nil, remoteResponseError(resp)
-		}
-		var body struct {
-			Sessions []struct {
-				session.StateFile
-				Alive bool `json:"alive"`
-			} `json:"sessions"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-			return nil, err
-		}
-		out := make([]sessionpick.SessionWithMeta, 0, len(body.Sessions))
-		for i := range body.Sessions {
-			st := body.Sessions[i].StateFile
-			out = append(out, sessionpick.SessionWithMeta{
-				State: &st,
-				Alive: body.Sessions[i].Alive,
-				Host:  remote.display,
-			})
-		}
-		return out, nil
-	}
-
-	store := session.NewStore(stateDir)
-	states, err := store.List()
-	if err != nil {
-		return nil, err
-	}
-	out := make([]sessionpick.SessionWithMeta, 0, len(states))
-	for _, st := range states {
-		out = append(out, sessionpick.SessionWithMeta{
-			State: st,
-			Alive: store.IsAlive(st.Session.Key),
-			Host:  "local",
-		})
-	}
-	return out, nil
 }
 
 // stoutIsTTY reports whether stdout is connected to a terminal. We
