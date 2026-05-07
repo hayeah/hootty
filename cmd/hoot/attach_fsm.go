@@ -40,6 +40,7 @@ type keyEvent struct {
 	cp    uint   // primary codepoint (first param of CSI u)
 	altCp uint   // alternate codepoint after ':' (0 if absent)
 	mod   uint   // modifier param (second param), 0 if absent
+	event uint   // event tag after modifier ':' (0 if absent)
 }
 
 // readByteFn returns the next byte from the input stream, or (0, false)
@@ -82,8 +83,8 @@ func readKeyEvent(read readByteFn) (keyEvent, bool) {
 		raw = append(raw, nb)
 		if nb >= 0x40 && nb <= 0x7E {
 			if nb == 'u' {
-				cp, altCp, mod := parseCSIuParams(params)
-				return keyEvent{raw: raw, csiU: true, cp: cp, altCp: altCp, mod: mod}, true
+				cp, altCp, mod, event := parseCSIuParams(params)
+				return keyEvent{raw: raw, csiU: true, cp: cp, altCp: altCp, mod: mod, event: event}, true
 			}
 			return keyEvent{raw: raw}, true
 		}
@@ -94,7 +95,7 @@ func readKeyEvent(read readByteFn) (keyEvent, bool) {
 // parseCSIuParams parses the parameter bytes of a `CSI <params> u`
 // report. Format: `<cp>[:<altCp>][;<mod>[:<event>][;<text>...]]`. Only
 // the first two ';'-separated groups are meaningful for chord matching.
-func parseCSIuParams(params []byte) (cp, altCp, mod uint) {
+func parseCSIuParams(params []byte) (cp, altCp, mod, event uint) {
 	groups := splitByte(params, ';')
 	if len(groups) >= 1 {
 		sub := splitByte(groups[0], ':')
@@ -106,6 +107,9 @@ func parseCSIuParams(params []byte) (cp, altCp, mod uint) {
 	if len(groups) >= 2 {
 		sub := splitByte(groups[1], ':')
 		mod = parseUint(sub[0])
+		if len(sub) >= 2 {
+			event = parseUint(sub[1])
+		}
 	}
 	return
 }
@@ -145,6 +149,21 @@ func modBits(mod uint) uint {
 }
 
 const modCtrl = 4
+
+const (
+	csiUEventOmitted = 0
+	csiUEventPress   = 1
+	csiUEventRepeat  = 2
+	csiUEventRelease = 3
+)
+
+func isCSIuPress(ev keyEvent) bool {
+	return !ev.csiU || ev.event == csiUEventOmitted || ev.event == csiUEventPress
+}
+
+func isCSIuRepeatOrRelease(ev keyEvent) bool {
+	return ev.csiU && (ev.event == csiUEventRepeat || ev.event == csiUEventRelease)
+}
 
 // prefixCodepoints returns the printable codepoints (uppercase + lower-
 // case + shift partner where applicable) that, combined with ctrl, would
@@ -188,6 +207,9 @@ func isPrefixKey(prefix byte, ev keyEvent) bool {
 	if !ev.csiU {
 		return len(ev.raw) == 1 && ev.raw[0] == prefix
 	}
+	if !isCSIuPress(ev) {
+		return false
+	}
 	if modBits(ev.mod)&modCtrl == 0 {
 		return false
 	}
@@ -221,6 +243,9 @@ func matchChord(ev keyEvent) chordCmd {
 		case 'c':
 			return chordClone
 		}
+		return chordNone
+	}
+	if !isCSIuPress(ev) {
 		return chordNone
 	}
 	bits := modBits(ev.mod)
@@ -293,6 +318,9 @@ func runChordFSM(prefix byte, read readByteFn, act fsmActions, stderr io.Writer)
 			}
 			act.forwardBytes(ev.raw)
 		case stateAfterPref:
+			if isCSIuRepeatOrRelease(ev) {
+				continue
+			}
 			cmd := matchChord(ev)
 			switch cmd {
 			case chordDetach:

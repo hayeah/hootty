@@ -92,6 +92,65 @@ func TestRunChordFSM_KittyAlternate(t *testing.T) {
 	}
 }
 
+// TestRunChordFSM_CodexPrefixReleaseThenDetach covers Codex's kitty
+// keyboard mode: disambiguate + report event types + report alternates.
+// The prefix key arrives as a press and a release; the release must not
+// consume the chord window before the user presses '.'.
+func TestRunChordFSM_CodexPrefixReleaseThenDetach(t *testing.T) {
+	r := runFSMOnBytes(0x1e, []byte("\x1b[54:94;6u\x1b[54:94;6:3u."))
+	if !reflect.DeepEqual(r.actions, []string{"detach"}) {
+		t.Fatalf("actions = %v, want [detach]", r.actions)
+	}
+	if len(r.forwarded) != 0 {
+		t.Fatalf("forwarded = %q, want empty", r.forwarded)
+	}
+}
+
+// TestRunChordFSM_CSIuExplicitPressEvents verifies terminals that include
+// the optional ":1" press tag still match both the prefix and follow-up.
+func TestRunChordFSM_CSIuExplicitPressEvents(t *testing.T) {
+	r := runFSMOnBytes(0x1e, []byte("\x1b[94;6:1u\x1b[46;1:1u"))
+	if !reflect.DeepEqual(r.actions, []string{"detach"}) {
+		t.Fatalf("actions = %v, want [detach]", r.actions)
+	}
+}
+
+// TestRunChordFSM_CSIuRepeatReleaseIgnoredAfterPrefix verifies repeat and
+// release events do not cancel the chord window after a matched prefix.
+func TestRunChordFSM_CSIuRepeatReleaseIgnoredAfterPrefix(t *testing.T) {
+	r := runFSMOnBytes(0x1e, []byte("\x1b[94;6u\x1b[94;6:2u\x1b[94;6:3u."))
+	if !reflect.DeepEqual(r.actions, []string{"detach"}) {
+		t.Fatalf("actions = %v, want [detach]", r.actions)
+	}
+}
+
+// TestRunChordFSM_CSIuReleaseDoesNotBecomePrefix verifies a release event
+// in normal state is forwarded to the inner program, not treated as hoot's
+// prefix key.
+func TestRunChordFSM_CSIuReleaseDoesNotBecomePrefix(t *testing.T) {
+	in := []byte("\x1b[54:94;6:3u.")
+	r := runFSMOnBytes(0x1e, in)
+	if len(r.actions) != 0 {
+		t.Fatalf("actions = %v, want none", r.actions)
+	}
+	if !bytes.Equal(r.forwarded, in) {
+		t.Fatalf("forwarded = %q, want %q", r.forwarded, in)
+	}
+}
+
+// TestRunChordFSM_PrefixReleaseThenUnknownFollowup verifies that prefix
+// release is ignored, but the next non-chord press still closes the chord
+// window according to the existing unknown-follow-up behavior.
+func TestRunChordFSM_PrefixReleaseThenUnknownFollowup(t *testing.T) {
+	r := runFSMOnBytes(0x1e, []byte("\x1b[94;6u\x1b[94;6:3ux."))
+	if len(r.actions) != 0 {
+		t.Fatalf("actions = %v, want none", r.actions)
+	}
+	if !bytes.Equal(r.forwarded, []byte(".")) {
+		t.Fatalf("forwarded = %q, want %q", r.forwarded, ".")
+	}
+}
+
 // TestRunChordFSM_KittyPrefixUnknownFollowup: prefix matches via CSI u
 // but the follow-up is not a chord byte. The FSM must NOT detach.
 // Per the spec's "forward both verbatim" wording the prefix bytes
@@ -160,20 +219,23 @@ func TestRunChordFSM_LegacyAndKittyMixed(t *testing.T) {
 // event-type tail, multi-group params.
 func TestParseCSIuParams(t *testing.T) {
 	cases := []struct {
-		in           string
-		cp, alt, mod uint
+		in                  string
+		cp, alt, mod, event uint
 	}{
-		{"46", 46, 0, 0},
-		{"46;1", 46, 0, 1},
-		{"94;6", 94, 0, 6},
-		{"94:54;6", 94, 54, 6},
-		{"94;6:1", 94, 0, 6},
+		{"46", 46, 0, 0, 0},
+		{"46;1", 46, 0, 1, 0},
+		{"94;6", 94, 0, 6, 0},
+		{"94:54;6", 94, 54, 6, 0},
+		{"94;6:1", 94, 0, 6, 1},
+		{"46;1:2", 46, 0, 1, 2},
+		{"54:94;6:3", 54, 94, 6, 3},
+		{"65;5:3;65", 65, 0, 5, 3},
 	}
 	for _, c := range cases {
-		cp, alt, mod := parseCSIuParams([]byte(c.in))
-		if cp != c.cp || alt != c.alt || mod != c.mod {
-			t.Errorf("parseCSIuParams(%q) = (%d,%d,%d), want (%d,%d,%d)",
-				c.in, cp, alt, mod, c.cp, c.alt, c.mod)
+		cp, alt, mod, event := parseCSIuParams([]byte(c.in))
+		if cp != c.cp || alt != c.alt || mod != c.mod || event != c.event {
+			t.Errorf("parseCSIuParams(%q) = (%d,%d,%d,%d), want (%d,%d,%d,%d)",
+				c.in, cp, alt, mod, event, c.cp, c.alt, c.mod, c.event)
 		}
 	}
 }
@@ -191,6 +253,9 @@ func TestIsPrefixKey(t *testing.T) {
 		{0x1e, keyEvent{raw: []byte{'.'}}, false},
 		{0x1e, keyEvent{csiU: true, cp: 94, mod: 6}, true}, // ctrl+shift+^
 		{0x1e, keyEvent{csiU: true, cp: 54, mod: 6}, true}, // ctrl+shift+6
+		{0x1e, keyEvent{csiU: true, cp: 54, altCp: 94, mod: 6, event: 1}, true},
+		{0x1e, keyEvent{csiU: true, cp: 54, altCp: 94, mod: 6, event: 2}, false},
+		{0x1e, keyEvent{csiU: true, cp: 54, altCp: 94, mod: 6, event: 3}, false},
 		{0x1e, keyEvent{csiU: true, cp: 94, mod: 2}, false}, // shift only — no ctrl
 		{0x1e, keyEvent{csiU: true, cp: 65, mod: 5}, false}, // ctrl+a
 		{0x02, keyEvent{csiU: true, cp: 'b', mod: 5}, true}, // ctrl+b
