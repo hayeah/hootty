@@ -64,7 +64,12 @@ func cmdServe(args []string) error {
 	register(mux, *prefix, "/sessions/{key}/resolve", srv.handleResolve)
 	register(mux, *prefix, "/sessions/{key}/events", srv.handleEvents)
 	register(mux, *prefix, "/sessions/{key}/attach", srv.handleAttach)
-	register(mux, *prefix, "/sessions/{key}/attach-raw", srv.handleAttachRaw)
+	// CLI clients hit /attach-raw and expect a hoot-attach/1 Upgrade.
+	// The session library's path is /attach (same URL the browser WS
+	// bridge above uses on serve-side). The proxy rewrites the upstream
+	// path to /attach so the URL split is purely a serve-side concern —
+	// browser → handleAttach (WS), CLI → catch-all → upstream /attach.
+	register(mux, *prefix, "/sessions/{key}/attach-raw", srv.handleAttachRawProxy)
 	// Catch-all for every other per-session verb. Specific routes
 	// above (e.g. /sessions/{key}/attach) still win in http.ServeMux
 	// because the path-shape with a literal segment is more specific
