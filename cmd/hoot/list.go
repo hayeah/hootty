@@ -19,7 +19,7 @@ import (
 func cmdList(args []string) error {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
-	remoteFlag := fs.String("remote", "", "remote hoot serve URL (http://host:port, host:port, or ssh://host)")
+	remoteFlag := fs.String("remote", "", "remote hoot serve URL (host, user@host, host:port — defaults to ssh://; or http(s)://host:port, ssh://host)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -76,7 +76,7 @@ func cmdList(args []string) error {
 func cmdResolve(args []string) error {
 	fs := flag.NewFlagSet("resolve", flag.ContinueOnError)
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
-	remoteFlag := fs.String("remote", "", "remote hoot serve URL (http://host:port, host:port, or ssh://host)")
+	remoteFlag := fs.String("remote", "", "remote hoot serve URL (host, user@host, host:port — defaults to ssh://; or http(s)://host:port, ssh://host)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

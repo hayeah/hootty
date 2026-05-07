@@ -30,7 +30,7 @@ func TestCmdListRemote(t *testing.T) {
 	defer server.Close()
 
 	out := captureStdout(t, func() {
-		if err := cmdList([]string{"--remote", server.Listener.Addr().String()}); err != nil {
+		if err := cmdList([]string{"--remote", "http://" + server.Listener.Addr().String()}); err != nil {
 			t.Fatalf("cmdList: %v", err)
 		}
 	})
@@ -56,7 +56,7 @@ func TestCmdResolveRemote(t *testing.T) {
 	defer server.Close()
 
 	out := captureStdout(t, func() {
-		if err := cmdResolve([]string{"--remote", server.Listener.Addr().String(), "abc"}); err != nil {
+		if err := cmdResolve([]string{"--remote", "http://" + server.Listener.Addr().String(), "abc"}); err != nil {
 			t.Fatalf("cmdResolve: %v", err)
 		}
 	})
@@ -87,7 +87,7 @@ func TestCmdRunRemote(t *testing.T) {
 	defer server.Close()
 
 	out := captureStdout(t, func() {
-		if err := cmdRun([]string{"--remote", server.Listener.Addr().String(), "--key", "abc123", "--", "bash", "-lc", "echo hi"}); err != nil {
+		if err := cmdRun([]string{"--remote", "http://" + server.Listener.Addr().String(), "--key", "abc123", "--", "bash", "-lc", "echo hi"}); err != nil {
 			t.Fatalf("cmdRun: %v", err)
 		}
 	})

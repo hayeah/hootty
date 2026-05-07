@@ -138,7 +138,7 @@ func TestCmdCloneRemote(t *testing.T) {
 	defer server.Close()
 
 	out := captureStdout(t, func() {
-		if err := cmdClone([]string{"--remote", server.Listener.Addr().String(), "--key", "dst123", "--env", "CLONE_VAR=visible", "src"}); err != nil {
+		if err := cmdClone([]string{"--remote", "http://" + server.Listener.Addr().String(), "--key", "dst123", "--env", "CLONE_VAR=visible", "src"}); err != nil {
 			t.Fatalf("cmdClone: %v", err)
 		}
 	})

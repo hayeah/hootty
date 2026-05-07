@@ -102,9 +102,10 @@ Anywhere a session key is accepted, you can pass either the full id
 or any unique prefix (minimum 3 characters). Ambiguous prefixes
 return an error listing the matches.
 
---remote accepts host:port, http(s)://host:port, or ssh://host.
-For ssh:// remotes, the local CLI shells out to OpenSSH and requires
-hoot in the remote PATH; no persistent hoot serve is required.
+--remote accepts host, host:port, user@host, user@host:port (all
+default to ssh://), or an explicit http(s)://host:port or ssh://host
+URL. For ssh:// remotes, the local CLI shells out to OpenSSH and
+requires hoot in the remote PATH; no persistent hoot serve is required.
 
 In an attach (mosh-style): <prefix>. detaches; <prefix>^ sends a
 literal prefix byte; <prefix>Ctrl-Z suspends hoot attach (resume

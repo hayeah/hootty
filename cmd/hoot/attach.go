@@ -55,8 +55,9 @@ func cmdAttach(args []string) int {
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `usage: hoot attach [flags] <id-or-prefix>
 
-  --remote <url>         remote `+"`hoot serve`"+` target: host:port,
-                         http://host:port, https://host:port, or ssh://host
+  --remote <url>         remote `+"`hoot serve`"+` target: host, host:port,
+                         user@host (defaults to ssh://), or an explicit
+                         http(s)://host:port or ssh://host URL
   --state-dir <dir>      session state directory (default: ~/.hoot);
                          local sessions and ssh tunnel state
   --no-reconnect         exit on first drop instead of auto-reconnecting
@@ -73,7 +74,7 @@ retries forever. Press any key to wake the backoff and retry now.
 <prefix>. still detaches cleanly.
 `)
 	}
-	remoteFlag := fs.String("remote", "", "remote target (host:port, http(s)://host:port, or ssh://host)")
+	remoteFlag := fs.String("remote", "", "remote target (host, user@host, host:port — defaults to ssh://; or explicit http(s)://host:port or ssh://host)")
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
 	noReconnect := fs.Bool("no-reconnect", false, "exit on first drop instead of auto-reconnecting (--remote only)")
 	prefixSpec := fs.String("prefix-key", "C-^", "command prefix byte (e.g. C-^, ^a, 0x1c)")
