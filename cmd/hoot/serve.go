@@ -62,7 +62,6 @@ func cmdServe(args []string) error {
 	register(mux, *prefix, "/sessions", srv.handleSessions)
 	register(mux, *prefix, "/sessions/{key}", srv.handleSession)
 	register(mux, *prefix, "/sessions/{key}/clone", srv.handleClone)
-	register(mux, *prefix, "/sessions/{key}/signal", srv.handleSignal)
 	register(mux, *prefix, "/sessions/{key}/input", srv.handleInput)
 	register(mux, *prefix, "/sessions/{key}/attachments", srv.handleAttachments)
 	register(mux, *prefix, "/sessions/{key}/attachments/{id}", srv.handleAttachmentByID)
