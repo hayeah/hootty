@@ -78,10 +78,12 @@ func cmdRun(args []string) error {
 			fmt.Println(sessionKey)
 			return nil
 		}
+		hud := newHUDState(loadHUDLine(remote, *stateDir, sessionKey))
 		exitCode, err := runAttachLoop(
 			remoteAttachTarget(remote, sessionKey),
 			attachOpts.PrefixByte,
 			!attachOpts.NoReconnect,
+			hud,
 		)
 		if exitCode != 0 || err != nil {
 			return &exitError{code: exitCode, err: err}
@@ -127,10 +129,12 @@ func cmdRun(args []string) error {
 		fmt.Println(*key)
 		return nil
 	}
+	hud := newHUDState(loadHUDLine(nil, *stateDir, *key))
 	exitCode, err := runAttachLoop(
 		localAttachTarget(*stateDir, *key),
 		attachOpts.PrefixByte,
 		false,
+		hud,
 	)
 	if exitCode != 0 || err != nil {
 		return &exitError{code: exitCode, err: err}
