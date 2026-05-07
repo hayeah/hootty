@@ -293,11 +293,6 @@ func runAttachLoop(initial attachTarget, prefixByte byte, reconnect bool, hud *h
 		}
 		hud.onDetach(writers.stdout)
 	}()
-	// Push + set the terminal title up front. Done before MakeRaw and
-	// before runConnectLoop so the user gets immediate orientation
-	// even during the first dial / backoff. No-op when stdout isn't a
-	// tty or we don't have a HUD line.
-	hud.onAttach(writers.stdout)
 
 	// Signal trap. Raw-mode Ctrl-C is just a byte forwarded to the
 	// remote, so SIGINT here is from `kill -INT` not the keyboard.
@@ -327,6 +322,15 @@ func runAttachLoop(initial attachTarget, prefixByte byte, reconnect bool, hud *h
 			_ = term.Restore(int(os.Stdin.Fd()), oldState)
 		}()
 	}
+
+	// Push + set the terminal title now. Sequenced AFTER MakeRaw so
+	// the OSC bytes don't get post-processed by canonical-mode line
+	// discipline, and so any user keypress arriving while the dial is
+	// in flight isn't echoed by the kernel before the prefix-key FSM
+	// can consume it. Sequenced BEFORE runConnectLoop so the title
+	// reflects the session as soon as `hoot attach` lands, even if the
+	// first dial is slow or backoffs.
+	hud.onAttach(writers.stdout)
 
 	// Initial size; SIGWINCH updates it.
 	cols, rows := localOrDefaultSize()
