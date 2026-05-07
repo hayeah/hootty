@@ -340,7 +340,7 @@ hoot write sess "submit\r"
 ```
 
 Mechanism: `POST /pty/input` on the session's `rpc.sock` (local) or
-`POST /sessions/<key>/input` on a `hoot serve` multiplexer (remote).
+`POST /sessions/<key>/pty/input` on a `hoot serve` multiplexer (remote).
 Body is the bytes to send; the optional `?paste=on` query toggles
 the bracketed-paste wrap. A `writeMu` in the supervisor serializes
 the underlying `master.Write` so concurrent attaches and `hoot write`
@@ -590,31 +590,34 @@ Routes (mounted at the bare path and — if `--prefix` is set — at
 `<prefix><path>` too, so the same binary works behind a
 `strip_prefix=false` proxy and on direct probing):
 
-| Method | Path                        | Behaviour                                                        |
-|--------|-----------------------------|------------------------------------------------------------------|
-| GET    | `/sessions`                 | `{sessions: [{...StateFile, alive}]}`                            |
-| POST   | `/sessions`                 | `{cmd \| argv, key?}` → forks `hoot __session`            |
-| GET    | `/sessions/{key}`           | state.json (alias of `/state`)                                  |
-| POST   | `/sessions/{key}/clone`     | `{key?, env?}` → forks a sibling from `session.argv`/`cwd`       |
-| GET    | `/sessions/{key}/resolve`   | resolve full id or unique prefix                                |
-| DELETE | `/sessions/{key}`           | SIGTERM the session by pid (204)                              |
-| GET    | `/sessions/{key}/state`     | state.json                                                       |
-| GET    | `/sessions/{key}/events`    | SSE proxy of upstream `/events`                                  |
-| GET    | `/sessions/{key}/attach`    | WebSocket bridge to upstream `/attach` (browser)                 |
-| GET    | `/sessions/{key}/attach-raw`| HTTP/1.1 Upgrade pass-through to upstream `/attach` (CLI)        |
-| GET    | `/healthz`                  | liveness                                                         |
+| Method | Path                              | Behaviour                                                                  |
+|--------|-----------------------------------|----------------------------------------------------------------------------|
+| GET    | `/sessions`                       | `{sessions: [{...StateFile, alive}]}`                                      |
+| POST   | `/sessions`                       | `{cmd \| argv, key?}` → forks `hoot __session`                            |
+| GET    | `/sessions/{key}`                 | state.json (disk read)                                                     |
+| DELETE | `/sessions/{key}`                 | SIGTERM the session by pid (204)                                           |
+| GET    | `/sessions/{key}/resolve`         | resolve full id or unique prefix                                           |
+| GET    | `/sessions/{key}/attach`          | WebSocket bridge to upstream `/attach` (browser)                           |
+| GET    | `/sessions/{key}/attach-raw`      | reverse proxy → upstream `/attach` (CLI HTTP/1.1 Upgrade)                  |
+| *      | `/sessions/{key}/{path...}`       | reverse proxy → rpc.sock `/<path...>` (signal, clone, events, pty/*, ...)  |
+| GET    | `/healthz`                        | liveness                                                                   |
+
+The catch-all `{path...}` is one `httputil.ReverseProxy` over a unix-socket
+transport. Resolve happens server-side once (full id or unique
+prefix → 404 / 409 on miss), then ReverseProxy forwards everything:
+JSON RPCs round-trip, SSE flushes per chunk via `FlushInterval: -1`,
+and HTTP/1.1 Upgrade is handled natively by Go ≥ 1.20. Adding a new
+session verb means one more `super.Mux().HandleFunc(...)` in the
+session library — no serve-side change.
 
 The WebSocket bridge (`/attach`) speaks browser-friendly framing —
 binary frames carry PTY bytes both directions, and a text frame
 `{"type":"resize","cols":N,"rows":N}` is translated into an
 `attachwire.MsgSize` upstream — and terminates the
-`hoot-attach/1` HTTP-Upgrade protocol on the rpc.sock side.
-
-The Upgrade pass-through (`/attach-raw`) is for the CLI: it resolves
-`{key}` (full id or unique prefix) server-side, hijacks the client
-connection, and `io.Copy`s bytes both ways with no transcoding. The
-client speaks the same `hoot-attach/1` framing it uses against a
-local `rpc.sock`. 404 on no-match, 409 on ambiguous prefix.
+`hoot-attach/1` HTTP-Upgrade protocol on the rpc.sock side. CLI
+clients use `/attach-raw` (which the catch-all rewrites to upstream
+`/attach`) so `hoot attach --remote` keeps speaking
+`hoot-attach/1` end-to-end without colliding with the WS handshake.
 
 ### Example dashboard
 

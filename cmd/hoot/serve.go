@@ -21,25 +21,28 @@ import (
 //
 // It is a fan-out / multiplexer over a state-dir of managed
 // sessions: each session has its own rpc.sock running the session
-// library's mux (/state, /events, /attach, /pty/*), and `serve`
-// exposes a session-keyed HTTP+WS surface on top of it.
+// library's mux (/state, /events, /attach, /pty/*, /attachments,
+// /signal, /clone), and `serve` exposes a session-keyed HTTP+WS
+// surface on top of it.
+//
+// The serve-side surface is intentionally thin: the catch-all reverse
+// proxy at /sessions/{key}/{path...} (handleSessionProxy) carries
+// every verb to the matching upstream path on rpc.sock — JSON RPCs,
+// SSE, and HTTP/1.1 Upgrade alike. Only routes that need real
+// translation or have no rpc.sock equivalent stay bespoke.
 //
 // Routes (mounted both at the bare path and under `--prefix` so the
 // same binary works behind a strip-prefix=false proxy and direct):
 //
-//	GET    /sessions                  list { sessions: [{...StateFile, alive}] }
-//	POST   /sessions                  spawn (body: {cmd?, argv?, key?})
-//	GET    /sessions/{key}            state.json (alias of /state)
-//	POST   /sessions/{key}/clone      spawn sibling from session argv/cwd
-//	GET    /sessions/{key}/resolve    resolve full key or unique prefix
-//	POST   /sessions/{key}/signal     forward {"signal": ...} to rpc.sock
-//	POST   /sessions/{key}/input      forward bytes (?paste=on|off) to rpc.sock /pty/input
-//	DELETE /sessions/{key}            SIGTERM the session by pid
-//	GET    /sessions/{key}/state      state.json
-//	GET    /sessions/{key}/events     SSE proxy of upstream /events
-//	GET    /sessions/{key}/attach     WebSocket bridge to upstream /attach
-//	GET    /sessions/{key}/attach-raw HTTP/1.1 Upgrade pass-through (CLI)
-//	GET    /healthz                   liveness
+//	GET    /sessions                       list { sessions: [{...StateFile, alive}] }
+//	POST   /sessions                       spawn (body: {cmd?, argv?, key?})
+//	GET    /sessions/{key}                 state.json (disk read)
+//	DELETE /sessions/{key}                 SIGTERM the session by pid
+//	GET    /sessions/{key}/resolve         resolve full key or unique prefix
+//	GET    /sessions/{key}/attach          WebSocket bridge to upstream /attach
+//	GET    /sessions/{key}/attach-raw      proxy → upstream /attach (CLI HTTP/1.1 Upgrade)
+//	*      /sessions/{key}/{path...}       reverse proxy → rpc.sock /<path...>
+//	GET    /healthz                        liveness
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	bind := fs.String("bind", "", `listen address (e.g. "127.0.0.1:20000", ":20000", "[::1]:20000", "unix:/path/to/serve.sock")`)
@@ -72,8 +75,7 @@ func cmdServe(args []string) error {
 	// Catch-all for every other per-session verb. Specific routes
 	// above (e.g. /sessions/{key}/attach) still win in http.ServeMux
 	// because the path-shape with a literal segment is more specific
-	// than the {path...} wildcard. This handler will gradually absorb
-	// the per-verb forwarders above as they are deleted.
+	// than the {path...} wildcard.
 	register(mux, *prefix, "/sessions/{key}/{path...}", srv.handleSessionProxy)
 	register(mux, *prefix, "/healthz", srv.handleHealth)
 
