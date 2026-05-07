@@ -46,30 +46,47 @@ import (
 func cmdDetach(args []string) error {
 	fs := flag.NewFlagSet("detach", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), `usage: hoot detach [flags] <session-prefix>[/<attachment-prefix>]
+		fmt.Fprint(fs.Output(), `usage: hoot detach [flags] [<session-prefix>[/<attachment-prefix>]]
 
 Force-close one or all attachments on a hoot session. Without a slash,
 detach every attachment on the resolved session; with a slash, detach
 the single attachment whose id matches the prefix.
 
+With no positional argument (and on a tty), an interactive fzf picker
+selects the target session and detaches all of its attachments. With a
+bare <session-prefix>, an id-prefix match wins; on miss the picker
+re-runs preseeded so a unique fuzzy hit auto-targets. The
+<attachment-prefix> half (after the slash) keeps the strict
+shortid-prefix semantics — it is not fuzz-matched. --strict disables
+the picker entirely (id-prefix only on the session half).
+
+See `+"`hoot attach -h`"+` for the picker line format and fzf query
+vocabulary.
+
 Flags:
   --state-dir <d>       session state directory (default ~/.hoot)
   --remote <url>        remote hoot serve URL
+  --strict              exact id-prefix match only — no fzf, no picker
 `)
 	}
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
 	remoteFlag := fs.String("remote", "", "remote hoot serve URL (host, user@host, host:port — defaults to ssh://; or http(s)://host:port, ssh://host)")
+	strict := fs.Bool("strict", false, "exact id-prefix match only — no fzf, no picker")
 	if err := fs.Parse(args); err != nil {
 		return &exitError{code: 2, err: err}
 	}
 	rest := fs.Args()
-	if len(rest) != 1 {
+	if len(rest) > 1 {
 		fs.Usage()
-		return &exitError{code: 2, err: fmt.Errorf("expected exactly one <session-prefix>[/<attachment-prefix>] argument")}
+		return &exitError{code: 2, err: fmt.Errorf("expected at most one <session-prefix>[/<attachment-prefix>] argument")}
 	}
-	sessPrefix, attPrefix, err := splitDetachArg(rest[0])
-	if err != nil {
-		return &exitError{code: 2, err: err}
+	var sessPrefix, attPrefix string
+	if len(rest) == 1 {
+		var err error
+		sessPrefix, attPrefix, err = splitDetachArg(rest[0])
+		if err != nil {
+			return &exitError{code: 2, err: err}
+		}
 	}
 
 	remote, err := parseRemoteFlag(*remoteFlag, *stateDir)
@@ -78,9 +95,17 @@ Flags:
 	}
 	if remote != nil {
 		defer remote.Close()
-		return detachRemote(remote, sessPrefix, attPrefix)
 	}
-	return detachLocal(*stateDir, sessPrefix, attPrefix)
+
+	sessKey, code, err := resolveSessionKey(sessPrefix, *strict, remote, *stateDir, pickerOptions{Verb: "detach"})
+	if err != nil {
+		return &exitError{code: code, err: err}
+	}
+
+	if remote != nil {
+		return detachRemote(remote, sessKey, attPrefix)
+	}
+	return detachLocal(*stateDir, sessKey, attPrefix)
 }
 
 // splitDetachArg parses the positional `<sess>[/<att>]` argument.

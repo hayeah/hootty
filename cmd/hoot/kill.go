@@ -39,33 +39,48 @@ import (
 func cmdKill(args []string) error {
 	fs := flag.NewFlagSet("kill", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), `usage: hoot kill [flags] <id-or-prefix>
+		fmt.Fprint(fs.Output(), `usage: hoot kill [flags] [<id-or-prefix-or-pattern>]
 
 Send a signal to the foreground process group of a hoot session's PTY
 (the same target Ctrl-C reaches). Defaults to TERM.
+
+With no positional argument (and on a tty), an interactive fzf picker
+selects the target session. With one argument, an id-prefix match wins;
+on miss the picker re-runs preseeded with --query=<arg> --select-1
+--exit-0 so a unique fuzzy hit auto-targets. --strict disables both
+fallbacks (id-prefix only).
+
+See `+"`hoot attach -h`"+` for the picker line format and fzf query
+vocabulary.
 
 Flags:
   -s <signal>           signal name or number (default TERM)
   --state-dir <d>       session state directory (default ~/.hoot)
   --remote <url>        remote hoot serve URL
+  --strict              exact id-prefix match only — no fzf, no picker
 `)
 	}
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
 	remoteFlag := fs.String("remote", "", "remote hoot serve URL (host, user@host, host:port — defaults to ssh://; or http(s)://host:port, ssh://host)")
 	sigSpec := fs.String("s", "TERM", "signal name or number")
+	strict := fs.Bool("strict", false, "exact id-prefix match only — no fzf, no picker")
 	if err := fs.Parse(args); err != nil {
 		return &exitError{code: 2, err: err}
 	}
 	rest := fs.Args()
-	if len(rest) != 1 {
+	if len(rest) > 1 {
 		fs.Usage()
-		return &exitError{code: 2, err: fmt.Errorf("expected exactly one <id-or-prefix> argument")}
+		return &exitError{code: 2, err: fmt.Errorf("expected at most one <id-or-prefix> argument")}
 	}
 	if _, err := parseSignal(*sigSpec); err != nil {
 		// Validate locally before we go over the wire. The remote
 		// will re-validate, but failing fast here gives a better
 		// error message and exit code.
 		return &exitError{code: 2, err: err}
+	}
+	arg := ""
+	if len(rest) == 1 {
+		arg = rest[0]
 	}
 
 	body, err := json.Marshal(signalRequest{Signal: *sigSpec})
@@ -79,9 +94,17 @@ Flags:
 	}
 	if remote != nil {
 		defer remote.Close()
-		return killRemote(remote, rest[0], body)
 	}
-	return killLocal(*stateDir, rest[0], body)
+
+	key, code, err := resolveSessionKey(arg, *strict, remote, *stateDir, pickerOptions{Verb: "kill"})
+	if err != nil {
+		return &exitError{code: code, err: err}
+	}
+
+	if remote != nil {
+		return killRemote(remote, key, body)
+	}
+	return killLocal(*stateDir, key, body)
 }
 
 func killLocal(stateDir, query string, body []byte) error {
