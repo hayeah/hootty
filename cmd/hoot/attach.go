@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -105,6 +104,7 @@ retries forever. Press any key to wake the backoff and retry now.
 	noReconnect := fs.Bool("no-reconnect", false, "exit on first drop instead of auto-reconnecting (--remote only)")
 	prefixSpec := fs.String("prefix-key", "C-^", "command prefix byte (e.g. C-^, ^a, 0x1c)")
 	strict := fs.Bool("strict", false, "exact id-prefix match only — no fzf picker, no fuzzy fallback")
+	restorerName := fs.String("restorer", "hoot", "terminal restorer policy: hoot (default, comprehensive cleanup) or dtach (clear-on-attach + cursor-show-on-detach; experimental control)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -118,7 +118,7 @@ retries forever. Press any key to wake the backoff and retry now.
 		arg = rest[0]
 	}
 
-	attachOpts, err := attachOptionsFromFlags(*prefixSpec, *noReconnect)
+	attachOpts, err := attachOptionsFromFlags(*prefixSpec, *noReconnect, *restorerName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hoot attach: %v\n", err)
 		return 2
@@ -154,7 +154,7 @@ retries forever. Press any key to wake the backoff and retry now.
 	// title/`?` emission downstream.
 	hud := newHUDState(loadHUDLine(remote, *stateDir, key))
 
-	exitCode, err := runAttachLoop(target, attachOpts.PrefixByte, reconnect, hud)
+	exitCode, err := runAttachLoop(target, attachOpts.PrefixByte, reconnect, hud, attachOpts.Restorer)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hoot attach: %v\n", err)
 	}
@@ -252,16 +252,21 @@ type attachWriters struct {
 type attachOptions struct {
 	PrefixByte  byte
 	NoReconnect bool
+	Restorer    string // "hoot" (default) or "dtach"; passed to newRestorer
 }
 
-func attachOptionsFromFlags(prefixSpec string, noReconnect bool) (attachOptions, error) {
+func attachOptionsFromFlags(prefixSpec string, noReconnect bool, restorer string) (attachOptions, error) {
 	prefixByte, err := attachwire.ParsePrefixKey(prefixSpec)
 	if err != nil {
+		return attachOptions{}, err
+	}
+	if _, err := newRestorer(restorer); err != nil {
 		return attachOptions{}, err
 	}
 	return attachOptions{
 		PrefixByte:  prefixByte,
 		NoReconnect: noReconnect,
+		Restorer:    restorer,
 	}, nil
 }
 
@@ -275,23 +280,27 @@ const (
 // re-runs per attempt across reconnects.
 //
 // Returns the process exit code and an optional error to print.
-func runAttachLoop(initial attachTarget, prefixByte byte, reconnect bool, hud *hudState) (int, error) {
+func runAttachLoop(initial attachTarget, prefixByte byte, reconnect bool, hud *hudState, restorerName string) (int, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	writers := attachWriters{stdout: os.Stdout, stderr: os.Stderr}
 	targets := &attachTargetState{target: initial}
 	var attached atomic.Bool
-	modeTracker := &terminalModeTracker{}
-	// Title pop runs unconditionally — onDetach is a no-op if we never
-	// pushed (e.g. dial failed before runConnectLoop wrote anything).
-	// emitDetach (with its banner + termios cleanup) stays guarded by
-	// `attached.Load()` because that line only makes sense if we ever
-	// reached the connected state.
+	restorer, err := newRestorer(restorerName)
+	if err != nil {
+		return 2, err
+	}
+	// Detach order: title pop FIRST (cosmetic UI state, runs even if we
+	// never connected), THEN emitDetach (mode-reset cleanup + banner,
+	// only if we did connect). Sequencing per BOSS_LOG: "the title push/
+	// pop is purely cosmetic UI state; the restorer owns the inner-
+	// program-affecting modes. Doing hud-first-then-restorer at detach
+	// means the title pops before we reset all the modes."
 	defer func() {
-		if attached.Load() {
-			emitDetach(writers.stdout, targets.current().label, modeTracker)
-		}
 		hud.onDetach(writers.stdout)
+		if attached.Load() {
+			emitDetach(writers.stdout, targets.current().label, restorer)
+		}
 	}()
 
 	// Signal trap. Raw-mode Ctrl-C is just a byte forwarded to the
@@ -321,6 +330,19 @@ func runAttachLoop(initial attachTarget, prefixByte byte, reconnect bool, hud *h
 		defer func() {
 			_ = term.Restore(int(os.Stdin.Fd()), oldState)
 		}()
+	}
+
+	// Restorer Attach FIRST: pushes a kitty kbd stack frame (hoot mode)
+	// or clears the screen (dtach mode). Sequenced BEFORE hud.onAttach
+	// per the boss-recommended ordering — restorer owns the inner-program-
+	// affecting modes; HUD title is cosmetic UI state and can be set
+	// "on a clean slate" once the restorer has done its setup. Sequenced
+	// AFTER MakeRaw so the bytes don't get post-processed by canonical-
+	// mode line discipline. Note: matches dtach upstream's "clear at
+	// attach.c entry, before master connect" behavior — if the dial
+	// fails, dtach mode still cleared the screen, faithful to dtach.
+	if err := restorer.Attach(writers.stdout); err != nil {
+		return 1, fmt.Errorf("restorer.Attach: %w", err)
 	}
 
 	// Push + set the terminal title now. Sequenced AFTER MakeRaw so
@@ -393,7 +415,7 @@ func runAttachLoop(initial attachTarget, prefixByte byte, reconnect bool, hud *h
 	}()
 
 	// Reconnect loop.
-	loopErr := runConnectLoop(ctx, targets, reconnect, &size, shared, &attached, writers, modeTracker)
+	loopErr := runConnectLoop(ctx, targets, reconnect, &size, shared, &attached, writers, restorer)
 
 	// Determine exit code from outer signals.
 	select {
@@ -428,7 +450,7 @@ func runConnectLoop(
 	shared *sharedSession,
 	attached *atomic.Bool,
 	writers attachWriters,
-	modeTracker *terminalModeTracker,
+	restorer TerminalRestorer,
 ) error {
 	gotConnectedOnce := false
 	for {
@@ -463,7 +485,7 @@ func runConnectLoop(
 		// Connected. Reset backoff and send Hello with current size.
 		shared.resetTier()
 		c, r := unpackSize(size.Load())
-		err = runSession(ctx, conn, c, r, shared, target.label, attached, writers, modeTracker)
+		err = runSession(ctx, conn, c, r, shared, target.label, attached, writers, restorer)
 		_ = conn.Close()
 
 		if ctx.Err() != nil {
@@ -514,7 +536,7 @@ func runSession(
 	label attachLabel,
 	attached *atomic.Bool,
 	writers attachWriters,
-	modeTracker *terminalModeTracker,
+	restorer TerminalRestorer,
 ) error {
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
 	defer sessionCancel()
@@ -595,7 +617,7 @@ func runSession(
 	r := bufio.NewReader(conn)
 	serverDone := make(chan error, 1)
 	go func() {
-		serverDone <- runServerLoop(sessionCtx, r, label, attached, writers, modeTracker, func() {
+		serverDone <- runServerLoop(sessionCtx, r, label, attached, writers, restorer, func() {
 			lastRecv.Store(time.Now().UnixNano())
 		})
 	}()
@@ -694,7 +716,10 @@ func runStdinFSM(ctx context.Context, prefix byte, shared *sharedSession, cancel
 // Snapshot parts are locally phased into connect banner, scrollback,
 // viewport clear, and visible screen. Live Output writes straight to
 // stdout. Size reports go to stderr. Returns on EOF or protocol error.
-func runServerLoop(ctx context.Context, r *bufio.Reader, label attachLabel, attached *atomic.Bool, writers attachWriters, modeTracker *terminalModeTracker, markRecv func()) error {
+// runServerLoop reads frames from the server. The restorer's Attach is
+// already called from runAttachLoop entry (once per process); here we
+// only call Observe on each chunk for state tracking.
+func runServerLoop(ctx context.Context, r *bufio.Reader, label attachLabel, attached *atomic.Bool, writers attachWriters, restorer TerminalRestorer, markRecv func()) error {
 	connectEmitted := false
 	for {
 		select {
@@ -716,18 +741,13 @@ func runServerLoop(ctx context.Context, r *bufio.Reader, label attachLabel, atta
 				connectEmitted = true
 				attached.Store(true)
 			}
-			if modeTracker != nil {
-				if err := modeTracker.pushKittyKbdForSnapshot(writers.stdout, payload); err != nil {
-					return err
-				}
-			}
 			if len(payload) > 0 {
 				if _, werr := writers.stdout.Write(payload); werr != nil {
 					return werr
 				}
 			}
-			if modeTracker != nil {
-				modeTracker.observe(payload)
+			if restorer != nil {
+				restorer.Observe(payload)
 			}
 		case attachwire.MsgSnapshotScreen:
 			if !connectEmitted {
@@ -738,25 +758,20 @@ func runServerLoop(ctx context.Context, r *bufio.Reader, label attachLabel, atta
 			if _, werr := writers.stdout.Write([]byte("\x1b[H\x1b[2J")); werr != nil {
 				return werr
 			}
-			if modeTracker != nil {
-				if err := modeTracker.pushKittyKbdForSnapshot(writers.stdout, payload); err != nil {
-					return err
-				}
-			}
 			if len(payload) > 0 {
 				if _, werr := writers.stdout.Write(payload); werr != nil {
 					return werr
 				}
 			}
-			if modeTracker != nil {
-				modeTracker.observe(payload)
+			if restorer != nil {
+				restorer.Observe(payload)
 			}
 		case attachwire.MsgOutput:
 			if _, werr := writers.stdout.Write(payload); werr != nil {
 				return werr
 			}
-			if modeTracker != nil {
-				modeTracker.observe(payload)
+			if restorer != nil {
+				restorer.Observe(payload)
 			}
 		case attachwire.MsgSize:
 			var sz attachwire.Size
@@ -782,238 +797,18 @@ func emitConnect(w io.Writer, label attachLabel) {
 	fmt.Fprintf(w, "\r\n[connected. %s @ %s]\r\n", label.Session, label.Host)
 }
 
-// Per-mode terminal-control sequences. Each one is independently safe to
-// send: the DECRST forms (`CSI ? <n> l`) and the keyboard protocol
-// sequences all use private-use CSI prefixes, so terminals that don't
-// implement the mode parse-and-drop the bytes without printing or
-// responding.
-const (
-	// Pop one level of kitty keyboard progressive-enhancement flags.
-	// Symmetric with the `CSI > <flags> u` push the inner TUI emitted
-	// at startup; without this, keys arrive at the outer shell as
-	// `CSI <code>;<mods> u` reports instead of plain bytes.
-	seqKittyKbdPop = "\x1b[<u"
-
-	// Push a hoot-owned kitty keyboard stack level before applying
-	// libghostty's snapshot state (`CSI = <flags>;1u`). Detach pops
-	// this same level, preserving whatever keyboard mode the outer
-	// terminal had before attach.
-	seqKittyKbdPushEmpty = "\x1b[>u"
-
-	// Disable xterm modifyOtherKeys mode 2. libghostty snapshots emit
-	// `CSI > 4;2m` when the remote TUI has this enabled.
-	seqModifyOtherKeysOff = "\x1b[>4;0m"
-
-	// Disable focus in/out reporting (DECSET 1004). Some TUIs use
-	// FocusIn/Out to refresh state; left on, the outer shell receives
-	// `CSI I` / `CSI O` whenever the window gains/loses focus.
-	seqFocusEventsOff = "\x1b[?1004l"
-
-	// Disable bracketed paste (DECSET 2004). Left on, pasted text
-	// arrives wrapped in `CSI 200~ ... CSI 201~` which readline-style
-	// shells handle, but anything else sees the brackets as garbage.
-	seqBracketedPasteOff = "\x1b[?2004l"
-
-	// Disable SGR-encoded mouse reports (DECSET 1006). SGR is the
-	// modern encoding; pair with the legacy 1000 disable below to
-	// cover both styles regardless of which the inner TUI enabled.
-	seqMouseSGROff = "\x1b[?1006l"
-
-	// Disable X10/normal mouse reporting (DECSET 1000). Cheap
-	// belt-and-suspenders against TUIs that enabled mouse tracking
-	// without the SGR extension.
-	seqMouseX10Off = "\x1b[?1000l"
-
-	// Leave alternate screen buffer (DECRST 1049). Restores the
-	// primary screen so the disconnect banner and the user's shell
-	// history are visible again.
-	seqAltScreenOff = "\x1b[?1049l"
-
-	// Reset SGR attributes. Belt-and-suspenders in case the TUI was
-	// mid-render (bold/inverse/colored) when we tore the pty down.
-	seqSGRReset = "\x1b[0m"
-
-	// Show cursor (DECTCEM set). TUIs commonly hide the cursor with
-	// `CSI ? 25 l`; without this the outer shell prompt has no caret.
-	seqCursorShow = "\x1b[?25h"
-
-	// Cursor home + clear screen. Cosmetic: clears the residual
-	// alt-screen contents that briefly flashed back as we left 1049.
-	seqClearScreen = "\x1b[H\x1b[2J"
-)
-
-// resetTermModes is what hoot writes to the LOCAL tty on detach to
-// undo terminal modes the remote TUI may have enabled. Order:
-//  1. Modal "I'm a TUI" flags off (idempotent on non-supporting terms)
-//  2. Visual reset (alt-screen, SGR, cursor, clear)
-//
-// Kitty keyboard pops and modifyOtherKeys reset are emitted conditionally
-// by terminalModeTracker because they correspond to state we observed or
-// intentionally created on the local tty.
-const resetTermModes = "" +
-	seqFocusEventsOff +
-	seqBracketedPasteOff +
-	seqMouseSGROff +
-	seqMouseX10Off +
-	seqAltScreenOff +
-	seqSGRReset +
-	seqCursorShow +
-	seqClearScreen
-
-func emitDetach(w io.Writer, label attachLabel, modeTracker *terminalModeTracker) {
-	prefix := ""
-	if modeTracker != nil {
-		prefix = modeTracker.detachReset()
+// emitDetach writes the restorer's cleanup bytes followed by the
+// "[disconnected. ...]" banner. The banner is local CLI UX, not
+// terminal-state hygiene, so it stays here rather than in any
+// TerminalRestorer impl. Cleanup error is swallowed: this is the final
+// write before the deferred function returns, and any failure mode
+// (closed stdout, broken pipe) means the user already isn't seeing
+// output anyway.
+func emitDetach(w io.Writer, label attachLabel, restorer TerminalRestorer) {
+	if restorer != nil {
+		_ = restorer.Cleanup(w)
 	}
-	fmt.Fprintf(w, "%s%s\r\n[disconnected. %s @ %s]\r\n", prefix, resetTermModes, label.Session, label.Host)
-}
-
-type terminalModeTracker struct {
-	kittyKbdPopsNeeded  atomic.Int32
-	snapshotKittyPushed atomic.Bool
-	modifyOtherKeys     atomic.Bool
-
-	csi []byte
-}
-
-func (t *terminalModeTracker) pushKittyKbdForSnapshot(w io.Writer, payload []byte) error {
-	if !containsKittyKbdSet(payload) {
-		return nil
-	}
-	if !t.snapshotKittyPushed.CompareAndSwap(false, true) {
-		return nil
-	}
-	t.addKittyKbdPop(1)
-	_, err := w.Write([]byte(seqKittyKbdPushEmpty))
-	return err
-}
-
-func (t *terminalModeTracker) observe(payload []byte) {
-	for _, b := range payload {
-		if len(t.csi) == 0 {
-			if b == '\x1b' {
-				t.csi = append(t.csi, b)
-			}
-			continue
-		}
-		if len(t.csi) == 1 {
-			if b == '[' {
-				t.csi = append(t.csi, b)
-				continue
-			}
-			if b == '\x1b' {
-				t.csi = t.csi[:1]
-				continue
-			}
-			t.csi = t.csi[:0]
-			continue
-		}
-
-		t.csi = append(t.csi, b)
-		if len(t.csi) > 32 {
-			t.csi = t.csi[:0]
-			continue
-		}
-		if b >= 0x40 && b <= 0x7e {
-			t.observeCSI(t.csi[2:])
-			t.csi = t.csi[:0]
-		}
-	}
-}
-
-func (t *terminalModeTracker) observeCSI(seq []byte) {
-	if len(seq) < 2 {
-		return
-	}
-	private := seq[0]
-	final := seq[len(seq)-1]
-	params := seq[1 : len(seq)-1]
-
-	switch {
-	case private == '>' && final == 'u':
-		t.addKittyKbdPop(1)
-	case private == '<' && final == 'u':
-		t.removeKittyKbdPop(parseCSIParamDefault(params, 1))
-	case private == '>' && final == 'm':
-		t.observeModifyOtherKeys(params)
-	}
-}
-
-func (t *terminalModeTracker) observeModifyOtherKeys(params []byte) {
-	if len(params) == 0 {
-		t.modifyOtherKeys.Store(false)
-		return
-	}
-	parts := strings.Split(string(params), ";")
-	if parts[0] != "4" {
-		return
-	}
-	t.modifyOtherKeys.Store(len(parts) >= 2 && parts[1] == "2")
-}
-
-func (t *terminalModeTracker) detachReset() string {
-	var reset strings.Builder
-	if n := int(t.kittyKbdPopsNeeded.Load()); n > 0 {
-		if n == 1 {
-			reset.WriteString(seqKittyKbdPop)
-		} else {
-			fmt.Fprintf(&reset, "\x1b[<%du", n)
-		}
-	}
-	if t.modifyOtherKeys.Load() {
-		reset.WriteString(seqModifyOtherKeysOff)
-	}
-	return reset.String()
-}
-
-func (t *terminalModeTracker) addKittyKbdPop(n int) {
-	if n <= 0 {
-		return
-	}
-	t.kittyKbdPopsNeeded.Add(int32(n))
-}
-
-func (t *terminalModeTracker) removeKittyKbdPop(n int) {
-	if n <= 0 {
-		return
-	}
-	for {
-		current := t.kittyKbdPopsNeeded.Load()
-		next := current - int32(n)
-		if next < 0 {
-			next = 0
-		}
-		if t.kittyKbdPopsNeeded.CompareAndSwap(current, next) {
-			return
-		}
-	}
-}
-
-func containsKittyKbdSet(payload []byte) bool {
-	for i := 0; i+3 < len(payload); i++ {
-		if payload[i] != '\x1b' || payload[i+1] != '[' || payload[i+2] != '=' {
-			continue
-		}
-		j := i + 3
-		for j < len(payload) && ((payload[j] >= '0' && payload[j] <= '9') || payload[j] == ';') {
-			j++
-		}
-		if j < len(payload) && payload[j] == 'u' {
-			return true
-		}
-	}
-	return false
-}
-
-func parseCSIParamDefault(params []byte, def int) int {
-	if len(params) == 0 {
-		return def
-	}
-	n, err := strconv.Atoi(string(params))
-	if err != nil || n <= 0 {
-		return def
-	}
-	return n
+	fmt.Fprintf(w, "\r\n[disconnected. %s @ %s]\r\n", label.Session, label.Host)
 }
 
 // sharedSession is the cross-goroutine bus connecting the stdin/
