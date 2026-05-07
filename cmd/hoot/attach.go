@@ -85,7 +85,15 @@ scripted use.
 
 Inside an attach (mosh-style): <prefix>. detaches; <prefix>^ sends a
 literal prefix byte to the remote; <prefix>Ctrl-Z suspends hoot
-attach (resume with fg); <prefix>? prints help.
+attach (resume with fg); <prefix>c clones the session; <prefix>?
+prints the HUD line for the current session and the chord help.
+
+On attach the terminal window title is set to a one-line summary in
+the form `+"`🦉 <id> [@host] <cwd> [<cmd...>]`"+` (`+"`@host`"+` omitted for local
+sessions, argv truncated at 60 runes). The previous title is saved
+via the xterm title stack (CSI 22;2t) and restored (CSI 23;2t) on
+detach. Inner TUIs that set their own title will override hoot's;
+press `+"`<prefix> ?`"+` for a reminder of which session you're in.
 
 During a remote disconnect: backoff is 1,2,4,8,16,30s capped at 30s and
 retries forever. Press any key to wake the backoff and retry now.

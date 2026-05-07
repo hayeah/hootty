@@ -482,7 +482,47 @@ collide with tmux's `C-b`). Override via `--prefix-key C-a`,
 | `<prefix> ^`          | send literal prefix byte to remote                |
 | `<prefix> Ctrl-Z`     | suspend `hoot attach` (SIGTSTP; `fg` resumes) |
 | `<prefix> c`          | clone current session and attach to the clone     |
-| `<prefix> ?`          | print one-line help on stderr, stay attached      |
+| `<prefix> ?`          | print the session HUD line + chord help on stdout |
+
+#### Session HUD (terminal title + `<prefix> ?`)
+
+When `hoot attach` connects, it sets the terminal window title to a
+one-line summary of the session and saves the prior title via the
+xterm title stack so it can be restored on detach. The format is the
+same string the `<prefix> ?` chord prints into the terminal:
+
+```
+🦉 <id> [@host] <cwd> [<cmd...>]
+```
+
+`@host` is omitted for local sessions (the bare `🦉 <id> ...` form);
+the joined argv is truncated at 60 runes with a trailing `…`. Example:
+
+```sh
+$ hoot attach a3f                # title becomes: 🦉 a3fxxx ~/proj/api bash --login
+# (inside the session, after Ctrl-^ ?)
+🦉 a3fxxx ~/proj/api bash --login
+[hoot] commands: "." detach · "^" literal prefix · "Ctrl-Z" suspend · "c" clone · "?" help
+```
+
+Mechanism: title push/set on attach uses xterm window-manipulation
+`CSI 22;2t` (push) followed by an `OSC 2 ; <text> BEL` (set window
+title only — leaves the icon name alone, important for iTerm2 /
+Terminal.app). Detach pops with `CSI 23;2t`. Modern xterm, iTerm2,
+Ghostty, kitty, Wezterm, and Alacritty all implement the title
+stack; on a terminal that doesn't, the sequences parse-and-drop and
+the user's shell reasserts the title on next prompt redraw.
+
+The title is set once at attach-start and not refreshed mid-session
+— inner TUIs (vim, claude code, tmux, …) commonly set their own
+title and we don't fight that. The `<prefix> ?` chord is the
+escape hatch when you need a reminder of which session you're in;
+it prints the HUD line and the chord vocabulary onto the local
+terminal (stdout, dim SGR, leading + trailing CRLF) without
+disturbing the inner program's cursor more than necessary.
+
+Title emission is gated on stdout being a tty, so scripted attaches
+(e.g. piped output) don't see stray control bytes.
 
 Exit codes: `0` clean detach, `1` protocol/dial error, `2` argument
 error (or `404`/`409` from a remote `attach-raw`), `130` terminated by
