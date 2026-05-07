@@ -25,6 +25,8 @@ import (
 
 	"github.com/hayeah/hootty"
 	"github.com/hayeah/hootty/internal/attachwire"
+	"github.com/hayeah/hootty/internal/sessionpick"
+	"github.com/hayeah/hootty/internal/shortid"
 )
 
 // cmdAttach implements `hoot attach`. Two transports:
@@ -53,17 +55,34 @@ import (
 func cmdAttach(args []string) int {
 	fs := flag.NewFlagSet("attach", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, `usage: hoot attach [flags] <id-or-prefix>
+		fmt.Fprintf(os.Stderr, `usage: hoot attach [flags] [<id-or-prefix-or-pattern>]
+
+With no positional argument, an interactive fzf picker over the
+available sessions is launched. With one argument, hoot attempts an
+id-prefix match first; on miss, it falls back to a pre-seeded fzf
+picker (--query=<arg> --select-1 --exit-0) so a unique fuzzy match
+auto-attaches. Use --strict to disable the fuzzy fallback.
 
   --remote <url>         remote `+"`hoot serve`"+` target: host, host:port,
                          user@host (defaults to ssh://), or an explicit
                          http(s)://host:port or ssh://host URL
   --state-dir <dir>      session state directory (default: ~/.hoot);
                          local sessions and ssh tunnel state
+  --strict               exact id-prefix match only — never invoke fzf,
+                         never open the picker
   --no-reconnect         exit on first drop instead of auto-reconnecting
                          (--remote only; ignored for local attach)
   --prefix-key <key>     command prefix byte (default: C-^). Forms: C-^, ^^,
                          0x1e, or a single ASCII control byte.
+
+The picker line format is `+"`[id]\\t@host\\tcwd\\tcmd\\ttag`"+`. The
+single-char field markers (`+"`@`, `[`, `*`"+`) double as natural fzf
+query prefixes — type `+"`@m4`"+` to scope to host, `+"`[a3`"+` to scope to id, or
+`+"`*`"+` for live attached sessions. fzf's full extended-search syntax
+applies (`+"`'exact`, `^prefix`, `suffix$`, `!negate`, `a | b`"+`).
+
+The fzf binary must be on PATH; use --strict to bypass it for
+scripted use.
 
 Inside an attach (mosh-style): <prefix>. detaches; <prefix>^ sends a
 literal prefix byte to the remote; <prefix>Ctrl-Z suspends hoot
@@ -78,13 +97,18 @@ retries forever. Press any key to wake the backoff and retry now.
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
 	noReconnect := fs.Bool("no-reconnect", false, "exit on first drop instead of auto-reconnecting (--remote only)")
 	prefixSpec := fs.String("prefix-key", "C-^", "command prefix byte (e.g. C-^, ^a, 0x1c)")
+	strict := fs.Bool("strict", false, "exact id-prefix match only — no fzf picker, no fuzzy fallback")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	rest := fs.Args()
-	if len(rest) != 1 {
+	if len(rest) > 1 {
 		fs.Usage()
 		return 2
+	}
+	arg := ""
+	if len(rest) == 1 {
+		arg = rest[0]
 	}
 
 	attachOpts, err := attachOptionsFromFlags(*prefixSpec, *noReconnect)
@@ -93,7 +117,6 @@ retries forever. Press any key to wake the backoff and retry now.
 		return 2
 	}
 
-	var target attachTarget
 	var reconnect bool
 	remote, err := parseRemoteFlag(*remoteFlag, *stateDir)
 	if err != nil {
@@ -103,15 +126,19 @@ retries forever. Press any key to wake the backoff and retry now.
 	if remote != nil {
 		defer remote.Close()
 		reconnect = !attachOpts.NoReconnect
-		target = remoteAttachTarget(remote, rest[0])
+	}
+
+	key, code, err := resolveAttachKey(arg, *strict, remote, *stateDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hoot attach: %v\n", err)
+		return code
+	}
+
+	var target attachTarget
+	if remote != nil {
+		target = remoteAttachTarget(remote, key)
 	} else {
-		store := session.NewStore(*stateDir)
-		state, err := store.Resolve(rest[0])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "hoot attach: %v\n", err)
-			return 2
-		}
-		target = localAttachTarget(*stateDir, state.Session.Key)
+		target = localAttachTarget(*stateDir, key)
 	}
 
 	exitCode, err := runAttachLoop(target, attachOpts.PrefixByte, reconnect)
@@ -119,6 +146,143 @@ retries forever. Press any key to wake the backoff and retry now.
 		fmt.Fprintf(os.Stderr, "hoot attach: %v\n", err)
 	}
 	return exitCode
+}
+
+// resolveAttachKey returns the session key to attach to. It implements
+// the routing matrix from spec.md:
+//
+//   - --strict: id-prefix only (server resolves for --remote, store
+//     resolves locally). Empty arg + --strict is an error.
+//   - 0 args + tty: load list, run fzf picker (no preseed)
+//   - 0 args + no tty: error, exit 2
+//   - 1 arg: try IDResolve client-side; on unique → return; on
+//     ambiguous → surface (id beats fuzzy); on no-match → fzf with
+//     --query=arg --select-1 --exit-0 (tty only).
+//
+// On error, the second return is the process exit code to use.
+func resolveAttachKey(arg string, strict bool, remote *Remote, stateDir string) (string, int, error) {
+	if strict {
+		if arg == "" {
+			return "", 2, fmt.Errorf("--strict requires a session id")
+		}
+		if remote != nil {
+			// Existing behavior: server resolves. attach-raw will
+			// 404/409 if the id is bad and we'll surface that as exit 2.
+			return arg, 0, nil
+		}
+		store := session.NewStore(stateDir)
+		state, err := store.Resolve(arg)
+		if err != nil {
+			return "", 2, err
+		}
+		return state.Session.Key, 0, nil
+	}
+
+	hasTTY := stdoutIsTTY()
+	if arg == "" && !hasTTY {
+		return "", 2, fmt.Errorf("no session id given; tty required for picker")
+	}
+
+	states, err := loadSessionList(remote, stateDir)
+	if err != nil {
+		return "", 1, err
+	}
+	if len(states) == 0 {
+		return "", 2, fmt.Errorf("no sessions to attach to")
+	}
+
+	if arg != "" {
+		sm, err := sessionpick.IDResolve(states, arg)
+		if err == nil {
+			return sm.State.Session.Key, 0, nil
+		}
+		var amb *shortid.AmbiguousIDError
+		if errors.As(err, &amb) {
+			// Id beats fuzzy on collision: surface the existing
+			// ambiguity error instead of falling through.
+			return "", 2, err
+		}
+		// IDNotFoundError or IDTooShortError → fall through to fzf.
+		if !hasTTY {
+			return "", 2, fmt.Errorf("no session matched %q (tty required for picker)", arg)
+		}
+	}
+
+	key, err := runFZFPicker(states, arg)
+	switch {
+	case err == nil:
+		return key, 0, nil
+	case errors.Is(err, errFZFNotFound):
+		return "", 2, fmt.Errorf("fzf not found on PATH; install fzf (`brew install fzf` / `apt install fzf`) or pass --strict <id>")
+	case errors.Is(err, errPickerCancelled):
+		return "", 130, fmt.Errorf("picker cancelled")
+	case errors.Is(err, errPickerNoMatch):
+		if arg != "" {
+			return "", 2, fmt.Errorf("no session matched %q", arg)
+		}
+		return "", 2, fmt.Errorf("no session selected")
+	default:
+		return "", 1, err
+	}
+}
+
+// loadSessionList loads the candidate sessions for the picker. For
+// --remote it issues GET /sessions (which already returns the
+// `alive` flag); locally it walks the state directory and probes each
+// dir's flock for liveness.
+func loadSessionList(remote *Remote, stateDir string) ([]sessionpick.SessionWithMeta, error) {
+	if remote != nil {
+		resp, err := httpClient(remote).Get("http://hoot/sessions")
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, remoteResponseError(resp)
+		}
+		var body struct {
+			Sessions []struct {
+				session.StateFile
+				Alive bool `json:"alive"`
+			} `json:"sessions"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			return nil, err
+		}
+		out := make([]sessionpick.SessionWithMeta, 0, len(body.Sessions))
+		for i := range body.Sessions {
+			st := body.Sessions[i].StateFile
+			out = append(out, sessionpick.SessionWithMeta{
+				State: &st,
+				Alive: body.Sessions[i].Alive,
+				Host:  remote.display,
+			})
+		}
+		return out, nil
+	}
+
+	store := session.NewStore(stateDir)
+	states, err := store.List()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]sessionpick.SessionWithMeta, 0, len(states))
+	for _, st := range states {
+		out = append(out, sessionpick.SessionWithMeta{
+			State: st,
+			Alive: store.IsAlive(st.Session.Key),
+			Host:  "local",
+		})
+	}
+	return out, nil
+}
+
+// stoutIsTTY reports whether stdout is connected to a terminal. We
+// gate the picker on stdout (not stdin) because fzf opens /dev/tty
+// itself for keyboard, but it draws on whatever stdout points to —
+// no point launching it for output that's being piped or redirected.
+func stdoutIsTTY() bool {
+	return term.IsTerminal(int(os.Stdout.Fd()))
 }
 
 // dialFn returns a connection that has already completed the
