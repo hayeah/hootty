@@ -19,6 +19,24 @@ func TestCmdRunRemoteAttachSpawnsThenAttaches(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/sessions":
+			// `hoot run --attach` loads the session list to render
+			// the HUD line for terminal title + `<prefix> ?` chord.
+			// Returning the freshly-created session keeps the HUD
+			// path realistic; an empty list would also work
+			// (loadHUDLine tolerates misses), but populating it
+			// exercises more of the flow.
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"sessions": []map[string]any{{
+					"session": map[string]any{
+						"key":  "abc123",
+						"argv": []string{"bash", "-lc", "echo hi"},
+						"cwd":  "/tmp",
+					},
+					"alive": true,
+				}},
+			})
 		case r.Method == http.MethodPost && r.URL.Path == "/sessions":
 			sawCreate = true
 			var body createSessionReq

@@ -23,7 +23,9 @@ import (
 
 	"golang.org/x/term"
 
+	session "github.com/hayeah/hootty"
 	"github.com/hayeah/hootty/internal/attachwire"
+	"github.com/hayeah/hootty/internal/sessionpick"
 )
 
 // cmdAttach implements `hoot attach`. Two transports:
@@ -138,11 +140,56 @@ retries forever. Press any key to wake the backoff and retry now.
 		target = localAttachTarget(*stateDir, key)
 	}
 
-	exitCode, err := runAttachLoop(target, attachOpts.PrefixByte, reconnect)
+	// Best-effort load of the session's StateFile to feed the HUD
+	// (terminal title + `<prefix> ?` status line). A miss here is not
+	// fatal — we just attach with an empty HUD line, which suppresses
+	// title/`?` emission downstream.
+	hud := newHUDState(loadHUDLine(remote, *stateDir, key))
+
+	exitCode, err := runAttachLoop(target, attachOpts.PrefixByte, reconnect, hud)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hoot attach: %v\n", err)
 	}
 	return exitCode
+}
+
+// loadHUDLine fetches a SessionWithMeta for `key` and renders it via
+// FormatHUD. Returns "" on any error so the caller can keep going —
+// the session is already resolved, the HUD is purely cosmetic.
+func loadHUDLine(remote *Remote, stateDir, key string) string {
+	sm, ok := loadSessionMeta(remote, stateDir, key)
+	if !ok {
+		return ""
+	}
+	return sessionpick.FormatHUD(sm)
+}
+
+// loadSessionMeta returns the SessionWithMeta for key, or (zero, false)
+// on any failure. Local: read state.json directly. Remote: walk the
+// /sessions list and find the matching key.
+func loadSessionMeta(remote *Remote, stateDir, key string) (sessionpick.SessionWithMeta, bool) {
+	if remote != nil {
+		states, err := loadSessionList(remote, stateDir)
+		if err != nil {
+			return sessionpick.SessionWithMeta{}, false
+		}
+		for _, sm := range states {
+			if sm.State != nil && sm.State.Session.Key == key {
+				return sm, true
+			}
+		}
+		return sessionpick.SessionWithMeta{}, false
+	}
+	store := session.NewStore(stateDir)
+	state, err := store.Load(key)
+	if err != nil {
+		return sessionpick.SessionWithMeta{}, false
+	}
+	return sessionpick.SessionWithMeta{
+		State: state,
+		Alive: store.IsAlive(key),
+		Host:  "local",
+	}, true
 }
 
 // stdoutIsTTY reports whether stdout is connected to a terminal. We
@@ -220,18 +267,29 @@ const (
 // re-runs per attempt across reconnects.
 //
 // Returns the process exit code and an optional error to print.
-func runAttachLoop(initial attachTarget, prefixByte byte, reconnect bool) (int, error) {
+func runAttachLoop(initial attachTarget, prefixByte byte, reconnect bool, hud *hudState) (int, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	writers := attachWriters{stdout: os.Stdout, stderr: os.Stderr}
 	targets := &attachTargetState{target: initial}
 	var attached atomic.Bool
 	modeTracker := &terminalModeTracker{}
+	// Title pop runs unconditionally — onDetach is a no-op if we never
+	// pushed (e.g. dial failed before runConnectLoop wrote anything).
+	// emitDetach (with its banner + termios cleanup) stays guarded by
+	// `attached.Load()` because that line only makes sense if we ever
+	// reached the connected state.
 	defer func() {
 		if attached.Load() {
 			emitDetach(writers.stdout, targets.current().label, modeTracker)
 		}
+		hud.onDetach(writers.stdout)
 	}()
+	// Push + set the terminal title up front. Done before MakeRaw and
+	// before runConnectLoop so the user gets immediate orientation
+	// even during the first dial / backoff. No-op when stdout isn't a
+	// tty or we don't have a HUD line.
+	hud.onAttach(writers.stdout)
 
 	// Signal trap. Raw-mode Ctrl-C is just a byte forwarded to the
 	// remote, so SIGINT here is from `kill -INT` not the keyboard.
@@ -319,7 +377,7 @@ func runAttachLoop(initial attachTarget, prefixByte byte, reconnect bool) (int, 
 			targets.set(next)
 			shared.markSwitched()
 			return nil
-		}, writers.stderr)
+		}, writers.stdout, writers.stderr, hud)
 	}()
 
 	// Reconnect loop.
@@ -568,9 +626,9 @@ func runSession(
 //	<prefix> .       detach (cancel ctx)
 //	<prefix> ^       send a literal prefix byte to the remote
 //	<prefix> Ctrl-Z  SIGTSTP self (resume with fg)
-//	<prefix> ?       print one-line help on stderr
+//	<prefix> ?       print HUD line + one-line chord help on stdout
 //	<prefix> c       clone current session and switch to it
-func runStdinFSM(ctx context.Context, prefix byte, shared *sharedSession, cancel context.CancelFunc, clone func(context.Context) error, stderr io.Writer) {
+func runStdinFSM(ctx context.Context, prefix byte, shared *sharedSession, cancel context.CancelFunc, clone func(context.Context) error, stdout, stderr io.Writer, hud *hudState) {
 	readCh := make(chan byteOrErr, 1)
 	go func() {
 		buf := make([]byte, 1)
@@ -604,8 +662,14 @@ func runStdinFSM(ctx context.Context, prefix byte, shared *sharedSession, cancel
 			_ = syscall.Kill(os.Getpid(), syscall.SIGTSTP)
 		},
 		help: func() {
-			fmt.Fprintln(stderr,
-				"\r\nhoot attach commands: \".\" detach, \"^\" literal prefix, \"Ctrl-Z\" suspend, \"c\" clone, \"?\" help\r")
+			// `<prefix> ?` prints the session HUD plus the chord
+			// vocabulary. The HUD answers "which session am I in?";
+			// the chord help answers "what else can I do?". Both go
+			// to stdout — this is intentional output, not error
+			// reporting, and keeps it visible across redirects of
+			// stderr (e.g. when the user wraps `hoot attach` in a
+			// shell function that swallows stderr).
+			hud.printChord(stdout)
 		},
 		clone: func() error {
 			return clone(ctx)
