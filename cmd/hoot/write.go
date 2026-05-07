@@ -165,7 +165,7 @@ func writeLocal(stateDir, target string, body []byte, paste bool) error {
 }
 
 func writeRemote(remote *Remote, target string, body []byte, paste bool) error {
-	urlStr := "http://hoot/sessions/" + url.PathEscape(target) + "/input"
+	urlStr := "http://hoot/sessions/" + url.PathEscape(target) + "/pty/input"
 	if paste {
 		urlStr += "?paste=on"
 	}

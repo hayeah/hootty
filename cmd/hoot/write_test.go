@@ -164,7 +164,7 @@ func TestWriteLocal_UnknownSession_MapsToExit3(t *testing.T) {
 }
 
 // TestServeHandleInput_Proxies stands up the serve mux pointing at
-// a fake upstream rpc.sock and confirms `POST /sessions/{key}/input`
+// a fake upstream rpc.sock and confirms POST /sessions/{key}/pty/input
 // forwards body + query verbatim and mirrors the upstream status.
 func TestServeHandleInput_Proxies(t *testing.T) {
 	stateDir := shortTempDir(t)
@@ -174,12 +174,12 @@ func TestServeHandleInput_Proxies(t *testing.T) {
 
 	srv := &serveState{store: session.NewStore(stateDir), stateDir: stateDir}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/sessions/{key}/input", srv.handleInput)
+	mux.HandleFunc("/sessions/{key}/{path...}", srv.handleSessionProxy)
 	httpSrv := httptest.NewServer(mux)
 	defer httpSrv.Close()
 
 	resp, err := http.Post(
-		httpSrv.URL+"/sessions/"+key+"/input?paste=on",
+		httpSrv.URL+"/sessions/"+key+"/pty/input?paste=on",
 		"application/octet-stream",
 		bytes.NewReader([]byte("ping")),
 	)
@@ -204,12 +204,12 @@ func TestServeHandleInput_UnknownSession(t *testing.T) {
 	stateDir := shortTempDir(t)
 	srv := &serveState{store: session.NewStore(stateDir), stateDir: stateDir}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/sessions/{key}/input", srv.handleInput)
+	mux.HandleFunc("/sessions/{key}/{path...}", srv.handleSessionProxy)
 	httpSrv := httptest.NewServer(mux)
 	defer httpSrv.Close()
 
 	resp, err := http.Post(
-		httpSrv.URL+"/sessions/nope/input",
+		httpSrv.URL+"/sessions/nope/pty/input",
 		"application/octet-stream",
 		strings.NewReader("body"),
 	)
@@ -222,24 +222,26 @@ func TestServeHandleInput_UnknownSession(t *testing.T) {
 	}
 }
 
-// TestServeHandleInput_BodyTooLarge — the proxy enforces the same
-// 1 MiB cap before dialing the upstream so a runaway pipe doesn't
-// even get connect()ed to the supervisor.
+// TestServeHandleInput_BodyTooLarge — the upstream session library
+// enforces the 1 MiB cap; the proxy faithfully forwards the request
+// and surfaces the upstream's 413.
 func TestServeHandleInput_BodyTooLarge(t *testing.T) {
 	stateDir := shortTempDir(t)
 	key := "bigbody"
 	writeFakeStateFile(t, stateDir, key)
-	_ = newFakeInputServer(t, filepath.Join(stateDir, key))
+	fake := newFakeInputServer(t, filepath.Join(stateDir, key))
+	fake.respStatus = http.StatusRequestEntityTooLarge
+	fake.respBody = "body too large (max 1 MiB)\n"
 
 	srv := &serveState{store: session.NewStore(stateDir), stateDir: stateDir}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/sessions/{key}/input", srv.handleInput)
+	mux.HandleFunc("/sessions/{key}/{path...}", srv.handleSessionProxy)
 	httpSrv := httptest.NewServer(mux)
 	defer httpSrv.Close()
 
 	big := bytes.Repeat([]byte{'a'}, (1<<20)+10)
 	resp, err := http.Post(
-		httpSrv.URL+"/sessions/"+key+"/input",
+		httpSrv.URL+"/sessions/"+key+"/pty/input",
 		"application/octet-stream",
 		bytes.NewReader(big),
 	)
