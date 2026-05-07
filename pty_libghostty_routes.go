@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -106,19 +107,62 @@ func (p *LibghosttyPTY) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleInput reads the request body and writes it to the PTY
-// master (raw byte passthrough).
+// inputBodyCap is the max body size accepted by handleInput. 1 MiB
+// is far above any realistic shell paste; anything larger is almost
+// certainly a runaway pipe. Bumpable later if a real use case appears.
+const inputBodyCap = 1 << 20
+
+// pasteStart and pasteEnd are the DEC bracketed-paste markers
+// (DECSET 2004). The receiving program collects everything between
+// them as one logical paste — no auto-execute on embedded newlines.
+var (
+	pasteStart = []byte{0x1b, '[', '2', '0', '0', '~'}
+	pasteEnd   = []byte{0x1b, '[', '2', '0', '1', '~'}
+)
+
+// handleInput accepts POST /pty/input. Body is the raw bytes to send
+// to the master FD. Query param ?paste=on opts into bracketed-paste
+// wrapping; if the receiver does not have DECSET 2004 enabled, the
+// request fails with 409 and writes nothing.
 func (p *LibghosttyPTY) handleInput(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	defer r.Body.Close()
-	data, err := io.ReadAll(r.Body)
+	data, err := io.ReadAll(io.LimitReader(r.Body, inputBodyCap+1))
 	if err != nil {
 		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	if len(data) > inputBodyCap {
+		http.Error(w, "body too large (max 1 MiB)", http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	paste := r.URL.Query().Get("paste")
+	switch paste {
+	case "", "off":
+		// no-op
+	case "on":
+		if bytes.Contains(data, pasteEnd) {
+			http.Error(w, "payload contains bracketed-paste end sequence (\\e[201~)", http.StatusBadRequest)
+			return
+		}
+		if !p.BracketedPasteActive() {
+			http.Error(w, "bracketed paste not enabled on receiver", http.StatusConflict)
+			return
+		}
+		wrapped := make([]byte, 0, len(pasteStart)+len(data)+len(pasteEnd))
+		wrapped = append(wrapped, pasteStart...)
+		wrapped = append(wrapped, data...)
+		wrapped = append(wrapped, pasteEnd...)
+		data = wrapped
+	default:
+		http.Error(w, "paste: must be on, off, or unset", http.StatusBadRequest)
+		return
+	}
+
 	if err := p.Write(data); err != nil {
 		http.Error(w, "write pty: "+err.Error(), http.StatusInternalServerError)
 		return

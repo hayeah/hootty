@@ -45,11 +45,16 @@ var ErrNoForeground = errors.New("pty: no foreground process group")
 // happens inside the dispatcher so subscribers and the recorder see
 // byte-identical streams.
 //
-// The PTY master itself is fine to Write from multiple goroutines
-// (kernel handles that), so Write doesn't go through the dispatcher.
+// Master writes are serialized with writeMu so that multi-byte chunks
+// from concurrent writers (attach clients, /pty/input requests, the
+// dispatcher's libghostty query auto-replies) cannot interleave at the
+// byte level. Kernel-level write atomicity only holds up to PIPE_BUF
+// (~512B on macOS); larger writes from `hoot write` would otherwise
+// be free to splice into another writer's buffer.
 type LibghosttyPTY struct {
-	master *os.File
-	term   *libghostty.Terminal
+	master  *os.File
+	writeMu sync.Mutex
+	term    *libghostty.Terminal
 	// primaryTerm mirrors only the primary screen. It receives the
 	// child's output after alternate-screen mode switches and
 	// alternate-screen content are stripped.
@@ -132,13 +137,17 @@ func NewLibghosttyPTY(master *os.File, cols, rows uint16, opts ...LibghosttyOpti
 
 	// WithWritePty closes the loop on terminal queries (DA/DECRPM/
 	// cursor-pos). Without it, the child's VT probes silently
-	// disappear and apps like vim break on first probe. Master
-	// writes are kernel-safe to do from any goroutine.
+	// disappear and apps like vim break on first probe. Goes through
+	// writeMu so query auto-replies can't interleave with attach /
+	// /pty/input writes mid-chunk.
 	term, err := libghostty.NewTerminal(
 		libghostty.WithSize(cols, rows),
 		libghostty.WithMaxScrollback(o.scrollback),
 		libghostty.WithWritePty(func(_ *libghostty.Terminal, data []byte) {
-			_, _ = p.master.Write(append([]byte(nil), data...))
+			buf := append([]byte(nil), data...)
+			p.writeMu.Lock()
+			_, _ = p.master.Write(buf)
+			p.writeMu.Unlock()
 		}),
 	)
 	if err != nil {
@@ -289,13 +298,39 @@ func (p *LibghosttyPTY) readLoop() {
 	}
 }
 
-// Write sends raw bytes to the PTY master. Safe to call from any
-// goroutine; does not touch the emulator (the emulator only sees
-// bytes that come back from the child — user input produces echo
-// that flows through readLoop in the normal terminal model).
+// Write sends raw bytes to the PTY master. Atomic per call: the
+// writeMu serializes writers so concurrent calls (attach client
+// MsgInput, /pty/input POSTs, libghostty query auto-replies) cannot
+// interleave at the byte level. Does not touch the emulator (the
+// emulator only sees bytes that come back from the child — user input
+// produces echo that flows through readLoop in the normal terminal
+// model).
 func (p *LibghosttyPTY) Write(data []byte) error {
+	p.writeMu.Lock()
 	_, err := p.master.Write(data)
+	p.writeMu.Unlock()
 	return err
+}
+
+// BracketedPasteActive reports whether the inner program has DECSET
+// 2004 (bracketed paste) enabled on the active terminal screen. The
+// query is dispatched onto the dispatcher goroutine because the
+// libghostty Terminal is not safe for concurrent reads alongside
+// VTWrite. Returns false if the dispatcher has shut down or the
+// underlying ModeGet errors.
+func (p *LibghosttyPTY) BracketedPasteActive() bool {
+	var v bool
+	p.do(func() {
+		if p.term == nil {
+			return
+		}
+		got, err := p.term.ModeGet(libghostty.ModeBracketedPaste)
+		if err != nil {
+			return
+		}
+		v = got
+	})
+	return v
 }
 
 // Capture returns a textual dump of the current screen. lines is
