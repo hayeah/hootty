@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"os"
 	"path/filepath"
 	"sync"
@@ -18,6 +19,78 @@ import (
 	"github.com/hayeah/hootty/internal/attachwire"
 	"github.com/hayeah/hootty/internal/shortid"
 )
+
+// handleSessionProxy is the catch-all reverse proxy mounted at
+// /sessions/{key}/{path...}. It resolves the key prefix locally,
+// dials <state-dir>/<full-key>/rpc.sock, and forwards the request to
+// the session library's mux at the upstream path captured by the
+// {path...} wildcard.
+//
+// Why one handler covers everything:
+//
+//   - JSON verbs (/signal, /clone, /pty/input, /attachments,
+//     /attachments/{id}, /state) — plain request/response, ReverseProxy
+//     copies headers + body in both directions.
+//   - SSE (/events) — FlushInterval: -1 forces ReverseProxy to flush
+//     each Write through to the client (no buffering).
+//   - HTTP/1.1 Upgrade (CLI /attach) — since Go 1.20, ReverseProxy
+//     transparently handles the 101 + bidirectional byte stream when
+//     Upgrade headers are present; no hijack/relay required here.
+//
+// Specific routes (handleSession, handleResolve, handleAttach for the
+// browser WS bridge) win in http.ServeMux, so this catch-all only
+// services the verbs that have an upstream rpc.sock equivalent.
+func (s *serveState) handleSessionProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxySession(w, r, r.PathValue("path"))
+}
+
+// handleAttachRawProxy is the CLI-facing entry point that survives the
+// rename. It routes /sessions/{key}/attach-raw at the serve-side to
+// /attach on the session-side rpc.sock — keeping the CLI URL stable
+// while letting the catch-all handle every other verb on its own path.
+//
+// Why a separate registration: the browser's /sessions/{key}/attach
+// goes through handleAttach (real WS↔attachwire translation) and the
+// CLI's hoot-attach/1 Upgrade can't share that URL — websocket.Accept
+// will reject the request. So serve-side keeps two distinct paths but
+// the proxy unifies them upstream.
+func (s *serveState) handleAttachRawProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxySession(w, r, "attach")
+}
+
+func (s *serveState) proxySession(w http.ResponseWriter, r *http.Request, upstreamPath string) {
+	query := r.PathValue("key")
+	if query == "" {
+		http.Error(w, "missing session key", http.StatusBadRequest)
+		return
+	}
+	state, err := s.store.Resolve(query)
+	if err != nil {
+		writeResolveError(w, err)
+		return
+	}
+	sockPath := filepath.Join(s.stateDir, state.Session.Key, "rpc.sock")
+
+	rp := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.Out.URL.Scheme = "http"
+			pr.Out.URL.Host = "unix"
+			pr.Out.URL.Path = "/" + upstreamPath
+			// pr.Out.URL.RawQuery is already copied from pr.In by
+			// httputil; leave it alone so ?paste=on etc. survive.
+		},
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return dialSock(ctx, sockPath)
+			},
+		},
+		// SSE + any other streaming response: flush each Write so
+		// browser clients see events in real time. Required for the
+		// /events route folded into this proxy.
+		FlushInterval: -1,
+	}
+	rp.ServeHTTP(w, r)
+}
 
 // handleEvents is a passthrough proxy of the upstream /events SSE
 // stream from rpc.sock to the HTTP client. The browser can't dial

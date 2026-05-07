@@ -71,6 +71,12 @@ func cmdServe(args []string) error {
 	register(mux, *prefix, "/sessions/{key}/events", srv.handleEvents)
 	register(mux, *prefix, "/sessions/{key}/attach", srv.handleAttach)
 	register(mux, *prefix, "/sessions/{key}/attach-raw", srv.handleAttachRaw)
+	// Catch-all for every other per-session verb. Specific routes
+	// above (e.g. /sessions/{key}/attach) still win in http.ServeMux
+	// because the path-shape with a literal segment is more specific
+	// than the {path...} wildcard. This handler will gradually absorb
+	// the per-verb forwarders above as they are deleted.
+	register(mux, *prefix, "/sessions/{key}/{path...}", srv.handleSessionProxy)
 	register(mux, *prefix, "/healthz", srv.handleHealth)
 
 	ln, cleanup, isUnix, err := listenServeBind(*bind)
