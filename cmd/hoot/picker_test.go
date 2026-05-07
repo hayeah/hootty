@@ -83,7 +83,7 @@ func TestRunFZFPicker_returnsKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	key, err := runFZFPicker(states, "")
+	key, err := runFZFPicker(states, "", pickerOptions{Verb: "attach"})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -91,11 +91,13 @@ func TestRunFZFPicker_returnsKey(t *testing.T) {
 		t.Fatalf("got key %q, want k7qzzz", key)
 	}
 
-	// Argv assertions: hidden index column, no preseed flags.
+	// Argv assertions: hidden index column, no preseed flags, prompt
+	// reflects the verb.
 	argv := readLines(t, filepath.Join(dir, "argv"))
 	mustContain(t, argv, "--with-nth=2..")
 	mustContain(t, argv, "--no-sort")
 	mustContain(t, argv, "--delimiter=\t")
+	mustContain(t, argv, "--prompt=attach> ")
 	for _, a := range argv {
 		if strings.HasPrefix(a, "--query=") {
 			t.Errorf("did not expect --query in argv when preseed empty, got %q", a)
@@ -119,7 +121,7 @@ func TestRunFZFPicker_preseedAddsSelectAndExitFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := runFZFPicker(states, "nvim"); err != nil {
+	if _, err := runFZFPicker(states, "nvim", pickerOptions{Verb: "attach"}); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 
@@ -129,12 +131,28 @@ func TestRunFZFPicker_preseedAddsSelectAndExitFlags(t *testing.T) {
 	mustContain(t, argv, "--exit-0")
 }
 
+func TestRunFZFPicker_verbCustomizesPromptAndHeader(t *testing.T) {
+	dir := fakeFZF(t)
+	states := []sessionpick.SessionWithMeta{mkState("a3fabc", "/x", []string{"sh"})}
+	if err := os.WriteFile(filepath.Join(dir, "picked-line"), []byte("1\t[a3fabc]\t@local\t/x\tsh\t\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runFZFPicker(states, "", pickerOptions{Verb: "kill"}); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	argv := readLines(t, filepath.Join(dir, "argv"))
+	mustContain(t, argv, "--prompt=kill> ")
+	mustContain(t, argv, "--header=↑↓ select · enter kill · esc cancel")
+}
+
 func TestRunFZFPicker_exit130IsCancelled(t *testing.T) {
 	dir := fakeFZF(t)
 	if err := os.WriteFile(filepath.Join(dir, "exit-code"), []byte("130"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := runFZFPicker([]sessionpick.SessionWithMeta{mkState("a3fabc", "/x", []string{"sh"})}, "")
+	_, err := runFZFPicker([]sessionpick.SessionWithMeta{mkState("a3fabc", "/x", []string{"sh"})}, "", pickerOptions{Verb: "attach"})
 	if !errors.Is(err, errPickerCancelled) {
 		t.Fatalf("got %v, want errPickerCancelled", err)
 	}
@@ -145,7 +163,7 @@ func TestRunFZFPicker_exit1IsNoMatch(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "exit-code"), []byte("1"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := runFZFPicker([]sessionpick.SessionWithMeta{mkState("a3fabc", "/x", []string{"sh"})}, "zzz")
+	_, err := runFZFPicker([]sessionpick.SessionWithMeta{mkState("a3fabc", "/x", []string{"sh"})}, "zzz", pickerOptions{Verb: "attach"})
 	if !errors.Is(err, errPickerNoMatch) {
 		t.Fatalf("got %v, want errPickerNoMatch", err)
 	}
@@ -154,7 +172,7 @@ func TestRunFZFPicker_exit1IsNoMatch(t *testing.T) {
 func TestRunFZFPicker_missingBinaryIsSentinel(t *testing.T) {
 	// Empty PATH so fzf can't be found anywhere.
 	t.Setenv("PATH", "")
-	_, err := runFZFPicker([]sessionpick.SessionWithMeta{mkState("a3fabc", "/x", []string{"sh"})}, "")
+	_, err := runFZFPicker([]sessionpick.SessionWithMeta{mkState("a3fabc", "/x", []string{"sh"})}, "", pickerOptions{Verb: "attach"})
 	if !errors.Is(err, errFZFNotFound) {
 		t.Fatalf("got %v, want errFZFNotFound", err)
 	}
@@ -162,7 +180,7 @@ func TestRunFZFPicker_missingBinaryIsSentinel(t *testing.T) {
 
 func TestRunFZFPicker_emptyStateListIsNoMatch(t *testing.T) {
 	fakeFZF(t)
-	_, err := runFZFPicker(nil, "")
+	_, err := runFZFPicker(nil, "", pickerOptions{Verb: "attach"})
 	if !errors.Is(err, errPickerNoMatch) {
 		t.Fatalf("got %v, want errPickerNoMatch", err)
 	}

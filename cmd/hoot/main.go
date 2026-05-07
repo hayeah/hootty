@@ -88,11 +88,12 @@ Usage:
   hoot resolve [--remote <url>] [--state-dir <d>] <id-or-prefix>
   hoot clone   [--remote <url>] [--state-dir <d>] [--key <new-key>]
                     [--env NAME[=VALUE]] [--env-file <path>]
-                    [--attach|--detach] <id-or-prefix>
+                    [--attach|--detach] [--strict] [<id-or-pattern>]
   hoot attach  [--remote <url>] [--state-dir <d>] [--no-reconnect]
-                    [--prefix-key <key>] <id-or-prefix>
-  hoot kill    [--remote <url>] [--state-dir <d>] [-s SIG] <id-or-prefix>
-  hoot detach  [--remote <url>] [--state-dir <d>] <session-prefix>[/<attachment-prefix>]
+                    [--prefix-key <key>] [--strict] [<id-or-pattern>]
+  hoot kill    [--remote <url>] [--state-dir <d>] [-s SIG] [--strict] [<id-or-pattern>]
+  hoot detach  [--remote <url>] [--state-dir <d>] [--strict]
+                    [<session-prefix>[/<attachment-prefix>]]
   hoot write   [--remote <url>] [--state-dir <d>] [--paste] [--input-file FILE]
                     <id-or-prefix> [DATA...]
   hoot serve   [--state-dir <d>] --bind <host:port|unix:/path.sock> [--prefix /api]

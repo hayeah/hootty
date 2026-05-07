@@ -31,11 +31,36 @@ type cloneSessionResp struct {
 
 func cmdClone(args []string) error {
 	fs := flag.NewFlagSet("clone", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), `usage: hoot clone [flags] [<id-or-prefix-or-pattern>]
+
+Spawn a fresh sibling session from a source session's recorded argv +
+cwd. With no positional argument (and on a tty), an interactive fzf
+picker selects the source. With one argument, an id-prefix match wins;
+on miss the picker re-runs preseeded with --query=<arg> --select-1
+--exit-0 so a unique fuzzy hit auto-clones. --strict disables both
+fallbacks (id-prefix only).
+
+See `+"`hoot attach -h`"+` for the picker line format and fzf query
+vocabulary.
+
+Flags:
+  --remote <url>        remote hoot serve URL
+  --state-dir <d>       session state directory (default ~/.hoot)
+  --key <k>             new session key (default: random short id)
+  --env NAME[=VALUE]    one-shot env override (repeatable)
+  --env-file <path>     dotenv-style override file (repeatable)
+  --attach              attach to the cloned session after creating it
+  --detach              do not attach after clone (default)
+  --strict              exact id-prefix match only — no fzf, no picker
+`)
+	}
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
 	key := fs.String("key", "", "new session key (default: random short id)")
 	remoteFlag := fs.String("remote", "", "remote hoot serve URL (host, user@host, host:port — defaults to ssh://; or http(s)://host:port, ssh://host)")
 	attach := fs.Bool("attach", false, "attach to the cloned session after creating it")
 	detach := fs.Bool("detach", false, "do not attach after clone (default)")
+	strict := fs.Bool("strict", false, "exact id-prefix match only — no fzf, no picker")
 	var envSpecs stringListFlag
 	var envFiles stringListFlag
 	fs.Var(&envSpecs, "env", "clone env override NAME or NAME=VALUE (repeatable)")
@@ -44,8 +69,9 @@ func cmdClone(args []string) error {
 		return err
 	}
 	rest := fs.Args()
-	if len(rest) != 1 {
-		return errors.New("clone: expected exactly one <id-or-prefix> argument")
+	if len(rest) > 1 {
+		fs.Usage()
+		return errors.New("clone: expected at most one <id-or-prefix> argument")
 	}
 	if *attach && *detach {
 		return errors.New("clone: --attach and --detach conflict")
@@ -54,6 +80,10 @@ func cmdClone(args []string) error {
 	if err != nil {
 		return err
 	}
+	arg := ""
+	if len(rest) == 1 {
+		arg = rest[0]
+	}
 
 	remote, err := parseRemoteFlag(*remoteFlag, *stateDir)
 	if err != nil {
@@ -61,7 +91,15 @@ func cmdClone(args []string) error {
 	}
 	if remote != nil {
 		defer remote.Close()
-		body, err := cloneSessionRemote(remote, rest[0], *key, env)
+	}
+
+	source, code, err := resolveSessionKey(arg, *strict, remote, *stateDir, pickerOptions{Verb: "clone"})
+	if err != nil {
+		return &exitError{code: code, err: err}
+	}
+
+	if remote != nil {
+		body, err := cloneSessionRemote(remote, source, *key, env)
 		if err != nil {
 			return err
 		}
@@ -76,7 +114,7 @@ func cmdClone(args []string) error {
 	}
 
 	store := session.NewStore(*stateDir)
-	body, err := cloneSession(store, *stateDir, rest[0], *key, env)
+	body, err := cloneSession(store, *stateDir, source, *key, env)
 	if err != nil {
 		return err
 	}
