@@ -68,7 +68,7 @@ server.
 | `/pty/html`       | GET    | HTML fragment dump (libghostty `FormatterFormatHTML`).        |
 | `/pty/vt`         | GET    | Self-contained VT replay of the current screen.               |
 | `/pty/stream`     | GET    | Chunked binary: VT snapshot + live PTY bytes.                 |
-| `/pty/input`      | POST   | Body bytes → PTY master (raw passthrough).                    |
+| `/pty/input`      | POST   | Body bytes → PTY master. `?paste=on` wraps in DEC 200~/201~ (409 if receiver mode disabled). 1 MiB cap. |
 | `/pty/resize`     | POST   | `{cols, rows}` JSON → resize.                                 |
 | `/attach`         | GET    | HTTP/1.1 Upgrade → binary attach protocol (see below).        |
 
@@ -93,6 +93,8 @@ hoot attach  [--remote <url>] [--state-dir <dir>] [--no-reconnect]
                   [--prefix-key <key>] <id-or-prefix>
 hoot kill    [--remote <url>] [--state-dir <dir>] [-s <signal>] <id-or-prefix>
 hoot detach  [--remote <url>] [--state-dir <dir>] <session-prefix>[/<attachment-prefix>]
+hoot write   [--remote <url>] [--state-dir <dir>] [--paste] [--input-file FILE]
+                  <id-or-prefix> [DATA...]
 hoot serve   [--state-dir <dir>] --bind <host:port|unix:/path.sock> [--prefix /api]
 ```
 
@@ -245,6 +247,80 @@ on the detached terminal sees a reason rather than a silent EOF.
 Exit codes: `0` detach delivered, `1` I/O error, `2` usage error,
 `3` no such session/attachment or ambiguous prefix, `5` session
 exists but is not alive.
+
+### `hoot write`
+
+`write` sends bytes to the supervised PTY's master FD without
+attaching. Useful for agents driving a session from outside, scripted
+input, and one-shot commands.
+
+```sh
+hoot write sess "ls -l\r"                   # type a command and run it
+hoot write sess "\x03"                      # Ctrl-C
+hoot write sess "\x1b[B\x1b[B\r"            # Down, Down, Enter (TUI menu)
+echo -n "data" | hoot write sess            # pipe stdin verbatim
+hoot write sess --input-file script.sh      # send file contents verbatim
+cat patch.diff | hoot write sess --paste    # safe paste (review, then \r)
+hoot write --remote http://lab:8484 sess "y\r"
+```
+
+Input source precedence:
+
+- `--input-file FILE` — bytes from `FILE`, **verbatim, no escape parsing**.
+- `DATA...` positional — concatenated with no separator, then run
+  through Go's string-literal interpreter (`strconv.Unquote`).
+  You get exactly Go's `"…"` grammar: `\xHH`, `\uXXXX`, `\UXXXXXXXX`,
+  `\NNN` octal, `\a \b \f \n \r \t \v`, `\\`, `\"`, `\'`. Anything
+  else is a parse error.
+- Stdin (when not a TTY) — bytes verbatim, no escape parsing.
+
+The argv-vs-stdin asymmetry mirrors `printf` (interpret-argv) vs
+`cat` (verbatim-stdin). If you want escape interpretation on a piped
+file, run `printf` upstream first.
+
+`--paste` wraps the bytes in DEC bracketed-paste markers
+(`\e[200~ … \e[201~`) so the receiver collects them as one logical
+paste rather than executing each embedded `\r`/`\n`. The supervisor
+checks `term.ModeGet(ModeBracketedPaste)` first; if the receiving
+program does not have DECSET 2004 enabled, the request returns 409
+and the CLI exits 2 with `bracketed paste not enabled on receiver`
+— **no silent fallback to raw bytes**. Payloads containing the
+end marker (`\e[201~`) are rejected with 400.
+
+Cheat sheet (`hoot write --help` carries the same):
+
+```
+Enter      \r            Tab        \t
+Backspace  \x7f          Escape     \x1b   (NOTE: no \e — Go grammar)
+Ctrl-A..Z  \x01..\x1a    Ctrl-C     \x03
+Up         \x1b[A        Down       \x1b[B
+Right      \x1b[C        Left       \x1b[D
+Home       \x1b[H        End        \x1b[F
+PageUp     \x1b[5~       PgDn       \x1b[6~
+F1..F4     \x1bOP \x1bOQ \x1bOR \x1bOS
+F5..F12    \x1b[15~ \x1b[17~ ... \x1b[24~
+```
+
+Multi-step flows compose in shell — `write` is a primitive, not an
+expect harness:
+
+```sh
+hoot write sess "/help\r"
+sleep 0.2
+hoot text sess | grep -q "Available commands" || exit 1
+hoot write sess "submit\r"
+```
+
+Mechanism: `POST /pty/input` on the session's `rpc.sock` (local) or
+`POST /sessions/<key>/input` on a `hoot serve` multiplexer (remote).
+Body is the bytes to send; the optional `?paste=on` query toggles
+the bracketed-paste wrap. A `writeMu` in the supervisor serializes
+the underlying `master.Write` so concurrent attaches and `hoot write`
+calls cannot interleave at the byte level. Body cap is 1 MiB.
+
+Exit codes: `0` write delivered, `1` I/O / unexpected server error,
+`2` usage / parse error / paste-not-enabled / payload contains
+`\e[201~` / body too large, `3` no such session or ambiguous prefix.
 
 ### `hoot attach`
 
