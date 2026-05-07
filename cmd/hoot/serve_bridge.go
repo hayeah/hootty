@@ -92,68 +92,6 @@ func (s *serveState) proxySession(w http.ResponseWriter, r *http.Request, upstre
 	rp.ServeHTTP(w, r)
 }
 
-// handleEvents is a passthrough proxy of the upstream /events SSE
-// stream from rpc.sock to the HTTP client. The browser can't dial
-// a unix socket itself, so we copy bytes through the response
-// writer with periodic flushes.
-func (s *serveState) handleEvents(w http.ResponseWriter, r *http.Request) {
-	key := r.PathValue("key")
-	if key == "" {
-		http.Error(w, "missing session key", http.StatusBadRequest)
-		return
-	}
-	sockPath := filepath.Join(s.stateDir, key, "rpc.sock")
-
-	// HTTP client over a Unix-socket transport that ignores the URL
-	// host. We use it for /events; /attach is hijacked instead.
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _ string, _ string) (net.Conn, error) {
-				return dialSock(ctx, sockPath)
-			},
-		},
-	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://unix/events", nil)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		http.Error(w, "upstream: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		http.Error(w, "upstream status "+resp.Status, http.StatusBadGateway)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming not supported", http.StatusInternalServerError)
-		return
-	}
-	flusher.Flush()
-
-	buf := make([]byte, 4096)
-	for {
-		n, rerr := resp.Body.Read(buf)
-		if n > 0 {
-			if _, werr := w.Write(buf[:n]); werr != nil {
-				return
-			}
-			flusher.Flush()
-		}
-		if rerr != nil {
-			return
-		}
-	}
-}
-
 func (s *serveState) handleResolve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

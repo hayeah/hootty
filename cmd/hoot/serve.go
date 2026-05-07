@@ -62,7 +62,6 @@ func cmdServe(args []string) error {
 	register(mux, *prefix, "/sessions", srv.handleSessions)
 	register(mux, *prefix, "/sessions/{key}", srv.handleSession)
 	register(mux, *prefix, "/sessions/{key}/resolve", srv.handleResolve)
-	register(mux, *prefix, "/sessions/{key}/events", srv.handleEvents)
 	register(mux, *prefix, "/sessions/{key}/attach", srv.handleAttach)
 	// CLI clients hit /attach-raw and expect a hoot-attach/1 Upgrade.
 	// The session library's path is /attach (same URL the browser WS
