@@ -39,6 +39,8 @@ func main() {
 		err = cmdKill(args)
 	case "detach":
 		err = cmdDetach(args)
+	case "write":
+		err = cmdWrite(args)
 	case "serve":
 		err = cmdServe(args)
 	case "__session":
@@ -91,6 +93,8 @@ Usage:
                     [--prefix-key <key>] <id-or-prefix>
   hoot kill    [--remote <url>] [--state-dir <d>] [-s SIG] <id-or-prefix>
   hoot detach  [--remote <url>] [--state-dir <d>] <session-prefix>[/<attachment-prefix>]
+  hoot write   [--remote <url>] [--state-dir <d>] [--paste] [--input-file FILE]
+                    <id-or-prefix> [DATA...]
   hoot serve   [--state-dir <d>] --bind <host:port|unix:/path.sock> [--prefix /api]
 
 The session state directory is <state-dir>/<key>/. The session
