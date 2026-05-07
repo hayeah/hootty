@@ -88,11 +88,11 @@ hoot list    [--remote <url>] [--state-dir <dir>]
 hoot resolve [--remote <url>] [--state-dir <dir>] <id-or-prefix>
 hoot clone   [--remote <url>] [--state-dir <dir>] [--key <new-key>]
                   [--env NAME[=VALUE]] [--env-file <path>]
-                  [--attach|--detach] <id-or-prefix>
+                  [--attach|--detach] [--strict] [<id-or-pattern>]
 hoot attach  [--remote <url>] [--state-dir <dir>] [--no-reconnect]
                   [--prefix-key <key>] [--strict] [<id-or-pattern>]
-hoot kill    [--remote <url>] [--state-dir <dir>] [-s <signal>] <id-or-prefix>
-hoot detach  [--remote <url>] [--state-dir <dir>] <session-prefix>[/<attachment-prefix>]
+hoot kill    [--remote <url>] [--state-dir <dir>] [-s <signal>] [--strict] [<id-or-pattern>]
+hoot detach  [--remote <url>] [--state-dir <dir>] [--strict] [<session-prefix>[/<attachment-prefix>]]
 hoot write   [--remote <url>] [--state-dir <dir>] [--paste] [--input-file FILE]
                   <id-or-prefix> [DATA...]
 hoot serve   [--state-dir <dir>] --bind <host:port|unix:/path.sock> [--prefix /api]
@@ -164,11 +164,13 @@ fork the running child and does not copy a live PTY; it repeats the
 original spawn now.
 
 ```sh
+hoot clone                       # picker over all sessions
 hoot clone abc
 hoot clone --key work2 abc
 hoot clone --attach abc
 hoot clone --env FEATURE=on --env-file .env.clone abc
 hoot clone --remote ssh://devbox abc
+hoot clone --strict abc          # id-prefix only — no fzf, no picker (scripts)
 ```
 
 The cloned process inherits from the new `hoot __session` environment
@@ -183,6 +185,13 @@ Bare `hoot clone` is detached by default and prints the new key on
 stdout, matching `hoot run`. `--attach` switches into the cloned
 session after creation.
 
+The positional id selecting the source session shares its routing
+matrix with `hoot attach`: no arg + tty drops into an fzf picker; a
+pattern that doesn't id-prefix-match falls back to fzf preseeded with
+`--query=<arg> --select-1 --exit-0`; non-tty contexts require an
+unambiguous id (or `--strict`). See `hoot attach -h` for the picker
+line format and fzf query vocabulary.
+
 ### `hoot kill`
 
 `kill` sends a Unix signal to the foreground process group of a session's
@@ -192,13 +201,21 @@ job the user has in the foreground; for a non-interactive child it lands
 on that child directly.
 
 ```sh
+hoot kill                      # picker over all sessions
 hoot kill abc                  # send SIGTERM (default)
 hoot kill -s INT abc           # interrupt the foreground job
 hoot kill -s KILL abc          # force-kill; supervisor tears down
 hoot kill -s USR1 abc          # arbitrary signal by name
 hoot kill -s 9 abc             # or by number
 hoot kill --remote ssh://devbox abc
+hoot kill --strict abc         # id-prefix only — no fzf, no picker (scripts)
 ```
+
+The positional id selecting the target session shares its routing
+matrix with `hoot attach` — no arg + tty drops into the picker; a
+pattern that doesn't id-prefix-match falls back to fzf preseeded; use
+`--strict` to skip fzf entirely. See `hoot attach -h` for the picker
+line format and fzf query vocabulary.
 
 Mechanism: the CLI POSTs `{"signal":"TERM"}` to `/signal` on the session's
 `rpc.sock` (local) or to `/sessions/{key}/signal` on a `hoot serve`
@@ -223,10 +240,21 @@ specific attachment). Both halves accept full ids or unique
 prefixes.
 
 ```sh
+hoot detach                    # picker over all sessions; close-all on the picked session
 hoot detach abc                # close every attachment on session "abc"
 hoot detach abc/x9k            # close just attachment "x9k" on "abc"
 hoot detach --remote ssh://devbox abc/x9k
+hoot detach --strict abc       # id-prefix only — no fzf, no picker (scripts)
 ```
+
+The session-prefix half participates in the same picker routing as
+`hoot attach`: no arg + tty drops into the picker; a bare `<sess>`
+that doesn't id-prefix-match falls back to fzf preseeded; `--strict`
+disables both. The `<attachment-prefix>` half (after the slash) keeps
+the strict shortid-prefix semantics — attachment ids are short
+generated random ids you copy from `hoot list`, not fuzzy-matchable
+terms, so they're never run through fzf. See `hoot attach -h` for the
+picker line format and fzf query vocabulary.
 
 Each attachment carries a short id minted at Hello time and stored
 in `state.json` under `session.attachments[]` along with the
