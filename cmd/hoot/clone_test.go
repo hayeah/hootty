@@ -75,47 +75,6 @@ func TestCloneSessionRejectsCorruptState(t *testing.T) {
 	}
 }
 
-func TestHandleClone(t *testing.T) {
-	stateDir := shortTempDir(t)
-	sourceKey := "src123"
-	sourceDir := filepath.Join(stateDir, sourceKey)
-	cwd := filepath.Join(stateDir, "work")
-	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
-		t.Fatalf("mkdir source: %v", err)
-	}
-	if err := os.MkdirAll(cwd, 0o755); err != nil {
-		t.Fatalf("mkdir cwd: %v", err)
-	}
-	if err := writeJSON(filepath.Join(sourceDir, "state.json"), session.StateFile{
-		Session: session.SessionState{Key: sourceKey, Argv: []string{"fakecmd", "arg1"}, CWD: cwd},
-	}); err != nil {
-		t.Fatalf("write source state: %v", err)
-	}
-
-	withFakeHootExecutable(t)
-	srv := &serveState{store: session.NewStore(stateDir), stateDir: stateDir}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/sessions/{key}/clone", srv.handleClone)
-	httpSrv := httptest.NewServer(mux)
-	defer httpSrv.Close()
-
-	resp, err := http.Post(httpSrv.URL+"/sessions/src123/clone", "application/json", strings.NewReader(`{"key":"dst123","env":{"CLONE_VAR":"via-http"}}`))
-	if err != nil {
-		t.Fatalf("POST clone: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("status = %d, want 201", resp.StatusCode)
-	}
-	var body cloneSessionResp
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if body.Session.Key != "dst123" || body.Session.CWD != cwd {
-		t.Fatalf("body session = %+v, want key dst123 cwd %s", body.Session, cwd)
-	}
-}
-
 func TestCmdCloneRemote(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/sessions/src/clone" {

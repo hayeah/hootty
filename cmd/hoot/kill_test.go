@@ -125,14 +125,14 @@ func TestKillSignalDeliversToChild(t *testing.T) {
 // hit the same path; this guards the wire shape.)
 func TestKillSignalReturnsBadRequestForUnknown(t *testing.T) {
 	// Build a serveState pointing at an empty store — the upstream
-	// rpc.sock won't be reached because the server-side parse
-	// happens after Resolve. So this test exercises the proxy's
-	// Resolve step (404) for an unknown key. A separate test
-	// exercises the in-process /signal handler's parse path.
+	// rpc.sock won't be reached because Resolve fails first. The
+	// catch-all proxy returns 404 from writeResolveError before any
+	// dial. A separate test exercises the in-process /signal
+	// handler's parse path.
 	stateDir := shortTempDir(t)
 	srv := &serveState{store: session.NewStore(stateDir), stateDir: stateDir}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/sessions/{key}/signal", srv.handleSignal)
+	mux.HandleFunc("/sessions/{key}/{path...}", srv.handleSessionProxy)
 	httpSrv := httptest.NewServer(mux)
 	defer httpSrv.Close()
 

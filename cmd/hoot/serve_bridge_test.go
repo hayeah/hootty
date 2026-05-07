@@ -54,7 +54,7 @@ func TestHandleAttachRawRoundTrip(t *testing.T) {
 	// serveState wired up like cmd/serve.go does.
 	srv := &serveState{store: session.NewStore(stateDir), stateDir: stateDir}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/sessions/{key}/attach-raw", srv.handleAttachRaw)
+	mux.HandleFunc("/sessions/{key}/attach-raw", srv.handleAttachRawProxy)
 	httpSrv := httptest.NewServer(mux)
 	defer httpSrv.Close()
 
@@ -116,7 +116,7 @@ func TestHandleAttachRawNotFound(t *testing.T) {
 	stateDir := shortTempDir(t)
 	srv := &serveState{store: session.NewStore(stateDir), stateDir: stateDir}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/sessions/{key}/attach-raw", srv.handleAttachRaw)
+	mux.HandleFunc("/sessions/{key}/attach-raw", srv.handleAttachRawProxy)
 	httpSrv := httptest.NewServer(mux)
 	defer httpSrv.Close()
 
@@ -151,7 +151,7 @@ func TestHandleAttachRawAmbiguous(t *testing.T) {
 
 	srv := &serveState{store: session.NewStore(stateDir), stateDir: stateDir}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/sessions/{key}/attach-raw", srv.handleAttachRaw)
+	mux.HandleFunc("/sessions/{key}/attach-raw", srv.handleAttachRawProxy)
 	httpSrv := httptest.NewServer(mux)
 	defer httpSrv.Close()
 

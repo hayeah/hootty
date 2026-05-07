@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"os"
 	"path/filepath"
 	"sync"
@@ -19,66 +20,76 @@ import (
 	"github.com/hayeah/hootty/internal/shortid"
 )
 
-// handleEvents is a passthrough proxy of the upstream /events SSE
-// stream from rpc.sock to the HTTP client. The browser can't dial
-// a unix socket itself, so we copy bytes through the response
-// writer with periodic flushes.
-func (s *serveState) handleEvents(w http.ResponseWriter, r *http.Request) {
-	key := r.PathValue("key")
-	if key == "" {
+// handleSessionProxy is the catch-all reverse proxy mounted at
+// /sessions/{key}/{path...}. It resolves the key prefix locally,
+// dials <state-dir>/<full-key>/rpc.sock, and forwards the request to
+// the session library's mux at the upstream path captured by the
+// {path...} wildcard.
+//
+// Why one handler covers everything:
+//
+//   - JSON verbs (/signal, /clone, /pty/input, /attachments,
+//     /attachments/{id}, /state) — plain request/response, ReverseProxy
+//     copies headers + body in both directions.
+//   - SSE (/events) — FlushInterval: -1 forces ReverseProxy to flush
+//     each Write through to the client (no buffering).
+//   - HTTP/1.1 Upgrade (CLI /attach) — since Go 1.20, ReverseProxy
+//     transparently handles the 101 + bidirectional byte stream when
+//     Upgrade headers are present; no hijack/relay required here.
+//
+// Specific routes (handleSession, handleResolve, handleAttach for the
+// browser WS bridge) win in http.ServeMux, so this catch-all only
+// services the verbs that have an upstream rpc.sock equivalent.
+func (s *serveState) handleSessionProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxySession(w, r, r.PathValue("path"))
+}
+
+// handleAttachRawProxy is the CLI-facing entry point that survives the
+// rename. It routes /sessions/{key}/attach-raw at the serve-side to
+// /attach on the session-side rpc.sock — keeping the CLI URL stable
+// while letting the catch-all handle every other verb on its own path.
+//
+// Why a separate registration: the browser's /sessions/{key}/attach
+// goes through handleAttach (real WS↔attachwire translation) and the
+// CLI's hoot-attach/1 Upgrade can't share that URL — websocket.Accept
+// will reject the request. So serve-side keeps two distinct paths but
+// the proxy unifies them upstream.
+func (s *serveState) handleAttachRawProxy(w http.ResponseWriter, r *http.Request) {
+	s.proxySession(w, r, "attach")
+}
+
+func (s *serveState) proxySession(w http.ResponseWriter, r *http.Request, upstreamPath string) {
+	query := r.PathValue("key")
+	if query == "" {
 		http.Error(w, "missing session key", http.StatusBadRequest)
 		return
 	}
-	sockPath := filepath.Join(s.stateDir, key, "rpc.sock")
+	state, err := s.store.Resolve(query)
+	if err != nil {
+		writeResolveError(w, err)
+		return
+	}
+	sockPath := filepath.Join(s.stateDir, state.Session.Key, "rpc.sock")
 
-	// HTTP client over a Unix-socket transport that ignores the URL
-	// host. We use it for /events; /attach is hijacked instead.
-	client := &http.Client{
+	rp := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.Out.URL.Scheme = "http"
+			pr.Out.URL.Host = "unix"
+			pr.Out.URL.Path = "/" + upstreamPath
+			// pr.Out.URL.RawQuery is already copied from pr.In by
+			// httputil; leave it alone so ?paste=on etc. survive.
+		},
 		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _ string, _ string) (net.Conn, error) {
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return dialSock(ctx, sockPath)
 			},
 		},
+		// SSE + any other streaming response: flush each Write so
+		// browser clients see events in real time. Required for the
+		// /events route folded into this proxy.
+		FlushInterval: -1,
 	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://unix/events", nil)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		http.Error(w, "upstream: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		http.Error(w, "upstream status "+resp.Status, http.StatusBadGateway)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming not supported", http.StatusInternalServerError)
-		return
-	}
-	flusher.Flush()
-
-	buf := make([]byte, 4096)
-	for {
-		n, rerr := resp.Body.Read(buf)
-		if n > 0 {
-			if _, werr := w.Write(buf[:n]); werr != nil {
-				return
-			}
-			flusher.Flush()
-		}
-		if rerr != nil {
-			return
-		}
-	}
+	rp.ServeHTTP(w, r)
 }
 
 func (s *serveState) handleResolve(w http.ResponseWriter, r *http.Request) {
@@ -371,120 +382,3 @@ func pumpWSToUpstream(ctx context.Context, ws *websocket.Conn, write func(byte, 
 	}
 }
 
-// handleAttachRaw is the CLI-facing HTTP/1.1 Upgrade pass-through to a
-// session's rpc.sock /attach. Unlike handleAttach (which terminates a
-// WebSocket and translates xterm.js JSON resize messages), this route
-// is a pure TCP relay: client speaks attachwire end-to-end, the
-// bridge just shovels bytes.
-//
-// Wire shape:
-//
-//	GET /sessions/{key-or-prefix}/attach-raw
-//	  Upgrade: hoot-attach/1
-//	  Connection: Upgrade
-//
-// {key-or-prefix} is resolved server-side via store.Resolve (full key
-// or unique prefix).
-//
-// Responses:
-//
-//	101  Switching Protocols + Upgrade: hoot-attach/1
-//	     → byte-stream of attachwire frames in both directions
-//	404  no session matched
-//	409  ambiguous prefix; body is a JSON {matches: [...]}
-//	502  upstream rpc.sock dial / upgrade failed
-//
-// The bridge does not parse attachwire; it does an io.Copy in each
-// direction. Either side closing tears the other down.
-func (s *serveState) handleAttachRaw(w http.ResponseWriter, r *http.Request) {
-	query := r.PathValue("key")
-	if query == "" {
-		http.Error(w, "missing session key", http.StatusBadRequest)
-		return
-	}
-
-	state, err := s.store.Resolve(query)
-	if err != nil {
-		writeResolveError(w, err)
-		return
-	}
-	sockPath := filepath.Join(s.stateDir, state.Session.Key, "rpc.sock")
-
-	// Step 1: dial rpc.sock and complete the upstream Upgrade. We
-	// reuse dialAttach which already performs the HTTP/1.1 Upgrade
-	// against rpc.sock and returns a conn ready for attachwire
-	// frames. If this fails, we haven't hijacked yet — return a
-	// regular 502.
-	upstream, err := dialAttach(r.Context(), sockPath)
-	if err != nil {
-		http.Error(w, "upstream: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-
-	// Step 2: hijack the client conn and send our own 101.
-	hj, ok := w.(http.Hijacker)
-	if !ok {
-		upstream.conn.Close()
-		http.Error(w, "hijacking not supported", http.StatusInternalServerError)
-		return
-	}
-	clientConn, clientBufrw, err := hj.Hijack()
-	if err != nil {
-		upstream.conn.Close()
-		// can't write a normal response after hijack failure either
-		return
-	}
-	defer clientConn.Close()
-	defer upstream.conn.Close()
-
-	if _, err := clientBufrw.WriteString("HTTP/1.1 101 Switching Protocols\r\n" +
-		"Upgrade: hoot-attach/1\r\n" +
-		"Connection: Upgrade\r\n\r\n"); err != nil {
-		return
-	}
-	if err := clientBufrw.Flush(); err != nil {
-		return
-	}
-
-	// Step 3: io.Copy in both directions. The upstream-side bufio
-	// reader (upstream.reader) may already hold buffered bytes that
-	// arrived between the upstream 101 and now (typically none, but
-	// must be drained first). Same on the client side: clientBufrw's
-	// reader may hold pipelined bytes from the request.
-	relay(clientConn, clientBufrw.Reader, upstream.conn, upstream.reader)
-}
-
-// relay shovels bytes between two conns whose buffered readers may
-// already hold prefix bytes from the protocol-switch handshake. It
-// returns when either copy direction errors or closes.
-func relay(a net.Conn, ar *bufio.Reader, b net.Conn, br *bufio.Reader) {
-	done := make(chan struct{}, 2)
-	halfClose := func(c net.Conn) {
-		if cw, ok := c.(closeWriteConn); ok {
-			_ = cw.CloseWrite()
-		}
-	}
-	go func() {
-		_, _ = io.Copy(b, ar) // a → b (drain ar buffered, then keep reading from a)
-		halfClose(b)
-		done <- struct{}{}
-	}()
-	go func() {
-		_, _ = io.Copy(a, br) // b → a
-		halfClose(a)
-		done <- struct{}{}
-	}()
-	<-done
-	// Closing one side typically tears down the other; we still
-	// wait for both copy goroutines for cleanliness.
-	<-done
-}
-
-// closeWriteConn is the half-close subset of net.TCPConn / *net.UnixConn.
-// We use CloseWrite to send EOF after one direction's copy finishes
-// without yanking the read side out from under the other goroutine.
-// Hijacked HTTP connections from net/http are *net.TCPConn under the
-// hood; the rpc.sock conn is *net.UnixConn. Both implement this.
-type closeWriteConn interface {
-	CloseWrite() error
-}

@@ -1,15 +1,11 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -110,33 +106,6 @@ func (s *serveState) createSession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *serveState) handleClone(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	key := r.PathValue("key")
-	if key == "" {
-		http.Error(w, "missing session key", http.StatusBadRequest)
-		return
-	}
-	var body cloneSessionReq
-	if r.Body != nil {
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, "bad body: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-	}
-	resp, err := cloneSession(s.store, s.stateDir, key, body.Key, body.Env)
-	if err != nil {
-		writeCloneError(w, err)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(resp)
-}
-
 func writeCloneError(w http.ResponseWriter, err error) {
 	if errors.Is(err, errCloneKeyAlive) {
 		http.Error(w, err.Error(), http.StatusConflict)
@@ -177,183 +146,6 @@ func (s *serveState) closeSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// handleSignal is POST /sessions/{key}/signal. Resolves the key
-// via the store (full id or unique prefix), then forwards the
-// request body to the upstream rpc.sock's /signal route, mirroring
-// status code and body back to the client.
-func (s *serveState) handleSignal(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	query := r.PathValue("key")
-	if query == "" {
-		http.Error(w, "missing session key", http.StatusBadRequest)
-		return
-	}
-	state, err := s.store.Resolve(query)
-	if err != nil {
-		writeResolveError(w, err)
-		return
-	}
-	sockPath := filepath.Join(s.stateDir, state.Session.Key, "rpc.sock")
-
-	body, err := io.ReadAll(io.LimitReader(r.Body, 8192))
-	if err != nil {
-		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	client := &http.Client{Transport: &http.Transport{
-		DialContext: func(ctx context.Context, _ string, _ string) (net.Conn, error) {
-			return dialSock(ctx, sockPath)
-		},
-	}}
-	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, "http://unix/signal", io.NopCloser(strings.NewReader(string(body))))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if ct := r.Header.Get("Content-Type"); ct != "" {
-		upstream.Header.Set("Content-Type", ct)
-	} else {
-		upstream.Header.Set("Content-Type", "application/json")
-	}
-
-	resp, err := client.Do(upstream)
-	if err != nil {
-		http.Error(w, "upstream: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
-}
-
-// handleInput is POST /sessions/{key}/input. Resolves the key via
-// the store (full id or unique prefix) and proxies the request body
-// — including the `paste` query param — to the upstream rpc.sock's
-// /pty/input route. Mirrors the dial pattern used by handleSignal.
-func (s *serveState) handleInput(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	query := r.PathValue("key")
-	if query == "" {
-		http.Error(w, "missing session key", http.StatusBadRequest)
-		return
-	}
-	state, err := s.store.Resolve(query)
-	if err != nil {
-		writeResolveError(w, err)
-		return
-	}
-	sockPath := filepath.Join(s.stateDir, state.Session.Key, "rpc.sock")
-
-	// 1 MiB matches the upstream cap; reading any further is
-	// pointless because the upstream will reject it.
-	body, err := io.ReadAll(io.LimitReader(r.Body, (1<<20)+1))
-	if err != nil {
-		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if len(body) > (1 << 20) {
-		http.Error(w, "body too large (max 1 MiB)", http.StatusRequestEntityTooLarge)
-		return
-	}
-
-	upstreamURL := "http://unix/pty/input"
-	if raw := r.URL.RawQuery; raw != "" {
-		upstreamURL += "?" + raw
-	}
-	client := &http.Client{Transport: &http.Transport{
-		DialContext: func(ctx context.Context, _ string, _ string) (net.Conn, error) {
-			return dialSock(ctx, sockPath)
-		},
-	}}
-	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, strings.NewReader(string(body)))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if ct := r.Header.Get("Content-Type"); ct != "" {
-		upstream.Header.Set("Content-Type", ct)
-	} else {
-		upstream.Header.Set("Content-Type", "application/octet-stream")
-	}
-
-	resp, err := client.Do(upstream)
-	if err != nil {
-		http.Error(w, "upstream: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
-}
-
-// handleAttachments is DELETE /sessions/{key}/attachments — close
-// every attachment on the session. Resolves the key prefix locally
-// and proxies the DELETE through to the upstream rpc.sock.
-func (s *serveState) handleAttachments(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	s.proxyDelete(w, r, "/attachments")
-}
-
-// handleAttachmentByID is DELETE /sessions/{key}/attachments/{id} —
-// close one attachment by its short id.
-func (s *serveState) handleAttachmentByID(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	id := r.PathValue("id")
-	if id == "" {
-		http.Error(w, "missing attachment id", http.StatusBadRequest)
-		return
-	}
-	s.proxyDelete(w, r, "/attachments/"+id)
-}
-
-// proxyDelete resolves the key prefix and forwards a DELETE to the
-// upstream rpc.sock at upstreamPath. Mirrors the dial pattern in
-// handleSignal.
-func (s *serveState) proxyDelete(w http.ResponseWriter, r *http.Request, upstreamPath string) {
-	query := r.PathValue("key")
-	if query == "" {
-		http.Error(w, "missing session key", http.StatusBadRequest)
-		return
-	}
-	state, err := s.store.Resolve(query)
-	if err != nil {
-		writeResolveError(w, err)
-		return
-	}
-	sockPath := filepath.Join(s.stateDir, state.Session.Key, "rpc.sock")
-	client := &http.Client{Transport: &http.Transport{
-		DialContext: func(ctx context.Context, _ string, _ string) (net.Conn, error) {
-			return dialSock(ctx, sockPath)
-		},
-	}}
-	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodDelete, "http://unix"+upstreamPath, nil)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	resp, err := client.Do(upstream)
-	if err != nil {
-		http.Error(w, "upstream: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
 }
 
 // splitCmd is a small shell-ish tokenizer: whitespace separates
