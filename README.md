@@ -86,7 +86,7 @@ hoot run     [--remote <url>] [--state-dir <dir>] [--key <key>] [--attach]
                   [--no-reconnect] [--prefix-key <key>]
                   [--cwd <path>] [--env NAME[=VALUE]] [--env-file <path>]
                   -- <cmd> [args...]
-hoot list    [--remote <url>] [--state-dir <dir>]
+hoot list    [--remote <url>] [--state-dir <dir>] [--json] [--all]
 hoot resolve [--remote <url>] [--state-dir <dir>] <id-or-prefix>
 hoot clone   [--remote <url>] [--state-dir <dir>] [--key <new-key>]
                   [--env NAME[=VALUE]] [--env-file <path>]
@@ -124,9 +124,28 @@ SSH handshake/authentication while the master is alive. `hoot` must be
 in the remote login shell's `PATH`; no persistent remote server is
 required.
 
-`hoot list` emits JSONL — one line per session, each line a
-serialized `session.StateFile` (the same shape `<dir>/<key>/state.json`
-holds on disk). Pipe through `jq -s` if you want an array.
+`hoot list` prints one human-readable line per **live** session by
+default — the same line shape the fzf picker matches against, so
+pattern intuition is shared across `hoot ls`, `hoot attach <pat>`,
+`hoot kill <pat>`, etc.:
+
+```
+[<id>]	@<host>	<cwd>	<argv...>	[*attached|(dead)]
+```
+
+Fields are tab-separated; `<host>` is `local` for local sessions or
+the literal `--remote` target string. The trailing tag is `*attached`
+when at least one client is connected, `(dead)` for sessions whose
+flock probe fails (only visible with `--all`), and empty otherwise.
+
+Flags:
+
+- `--all` — also list exited sessions (rendered with the `(dead)` tag).
+- `--json` — emit JSONL of `session.StateFile` instead of pretty
+  lines (one line per session, same shape `<dir>/<key>/state.json`
+  holds on disk). Pipe through `jq -s` if you want an array. Honors
+  `--all` the same way as the default output: alive only by default,
+  add `--all` for dead too.
 
 `run` opens a PTY pair, forks an internal session process (with the
 master on fd 3 and stdio = slave), and serves the mux on
