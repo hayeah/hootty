@@ -206,5 +206,11 @@ requires hoot in the remote PATH; no persistent hoot serve is required.
 In an attach (mosh-style): <prefix>. detaches; <prefix>^ sends a
 literal prefix byte; <prefix>Ctrl-Z suspends hoot attach (resume
 with fg); <prefix>? prints help. Default prefix is C-^ (Ctrl-^, 0x1e).
+
+Every spawned hoot session publishes $HOOT_SESSION=<key> in the
+shell's environment. Attach paths (`+"`hoot`, `hoot @<host>`, `hoot attach`, `hoot run --attach`"+`)
+refuse to nest when $HOOT_SESSION is set, mirroring tmux. Read-only
+verbs (`+"`list`, `log`, `resolve`, `kill`, `detach`, `write`"+`) still work.
+Use `+"`unset HOOT_SESSION`"+` to override.
 `)
 }

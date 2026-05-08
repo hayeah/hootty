@@ -122,6 +122,11 @@ retries forever. Press any key to wake the backoff and retry now.
 		arg = rest[0]
 	}
 
+	if err := errIfNestedHootSession("attach"); err != nil {
+		fmt.Fprintf(os.Stderr, "hoot attach: %v\n", err)
+		return 2
+	}
+
 	attachOpts, err := attachOptionsFromFlags(*prefixSpec, *noReconnect, *restorerName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hoot attach: %v\n", err)
