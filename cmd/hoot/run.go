@@ -44,6 +44,11 @@ func cmdRun(args []string) error {
 	if len(rest) == 0 {
 		return errors.New("run: missing command after --")
 	}
+	if *attach {
+		if err := errIfNestedHootSession("run --attach"); err != nil {
+			return err
+		}
+	}
 	attachOpts, err := attachOptionsFromFlags(*prefixSpec, *noReconnect, "hoot")
 	if err != nil {
 		return fmt.Errorf("run: %w", err)

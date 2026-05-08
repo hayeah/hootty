@@ -34,6 +34,10 @@ func cmdShell(args []string) error {
 		return fmt.Errorf("shell: unexpected positional argument %q (did you mean `hoot run -- %s`?)", rest[0], rest[0])
 	}
 
+	if err := errIfNestedHootSession("shell"); err != nil {
+		return err
+	}
+
 	attachOpts, err := attachOptionsFromFlags(*prefixSpec, *noReconnect, "hoot")
 	if err != nil {
 		return fmt.Errorf("shell: %w", err)
