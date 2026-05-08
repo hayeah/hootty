@@ -46,6 +46,20 @@ func seedSessions(t *testing.T, keys ...string) string {
 	return stateDir
 }
 
+// markAlive holds a flock on stateDir/<key>/ for the rest of the test
+// so store.IsAlive(key) reports true. Mirrors what a real running
+// session would do via session.AcquireFlock, scoped to the test
+// lifetime via t.Cleanup.
+func markAlive(t *testing.T, stateDir, key string) {
+	t.Helper()
+	dir := filepath.Join(stateDir, key)
+	fd, err := session.AcquireFlock(dir)
+	if err != nil {
+		t.Fatalf("AcquireFlock(%s): %v", dir, err)
+	}
+	t.Cleanup(func() { _ = session.ReleaseFlock(fd) })
+}
+
 // TestResolveSessionKey_StrictRequiresArg covers the --strict + empty
 // arg branch for every verb — the error message is shared but the
 // downstream behavior depends on this guard not being skipped.
@@ -256,5 +270,119 @@ func TestResolveSessionKey_FZFExit1NoMatchMaps2(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `"zzz"`) {
 		t.Errorf("err = %q, want %q substring", err.Error(), `"zzz"`)
+	}
+}
+
+// TestResolveSessionKey_AliveOnlyHidesDeadFromPicker verifies that
+// with AliveOnly=true the dead session never reaches fzf's stdin —
+// only the alive one is listed, so an empty arg + tty resolves it
+// without ambiguity.
+func TestResolveSessionKey_AliveOnlyHidesDeadFromPicker(t *testing.T) {
+	dir := fakeFZF(t)
+	fakeTTY(t, true)
+	stateDir := seedSessions(t, "deadaaa", "alivebbb")
+	markAlive(t, stateDir, "alivebbb")
+
+	key, code, err := resolveSessionKey("", false, nil, stateDir, pickerOptions{Verb: "attach", AliveOnly: true})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if code != 0 || key != "alivebbb" {
+		t.Fatalf("got (%q, %d), want (alivebbb, 0)", key, code)
+	}
+
+	stdin := readFile(t, filepath.Join(dir, "stdin"))
+	if !strings.Contains(stdin, "[alivebbb]") {
+		t.Errorf("stdin missing alive row, got:\n%s", stdin)
+	}
+	if strings.Contains(stdin, "[deadaaa]") {
+		t.Errorf("stdin should not include dead session, got:\n%s", stdin)
+	}
+}
+
+// TestResolveSessionKey_AliveOnlyAllDeadIsErr verifies the empty
+// post-filter case: every seeded session is dead → exit 2 with a
+// "no live sessions" message that hints at --all.
+func TestResolveSessionKey_AliveOnlyAllDeadIsErr(t *testing.T) {
+	fakeFZF(t)
+	fakeTTY(t, true)
+	stateDir := seedSessions(t, "abc111", "abc222")
+
+	_, code, err := resolveSessionKey("", false, nil, stateDir, pickerOptions{Verb: "log", AliveOnly: true})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if code != 2 {
+		t.Errorf("code = %d, want 2", code)
+	}
+	if !strings.Contains(err.Error(), "no live sessions") {
+		t.Errorf("err = %q, want 'no live sessions' substring", err.Error())
+	}
+}
+
+// TestResolveSessionKey_AliveOnlyIDPrefixSkipsDead verifies that the
+// id-prefix fast path also honors AliveOnly: a dead session whose key
+// is the only match for the typed prefix should NOT short-circuit.
+// Instead the resolver falls through to fzf with the typed pattern as
+// preseed, where the alive-only stdin produces no match → exit 2.
+func TestResolveSessionKey_AliveOnlyIDPrefixSkipsDead(t *testing.T) {
+	dir := fakeFZF(t)
+	if err := os.WriteFile(filepath.Join(dir, "exit-code"), []byte("1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fakeTTY(t, true)
+	stateDir := seedSessions(t, "deadprefix", "alivexyz")
+	markAlive(t, stateDir, "alivexyz")
+
+	_, code, err := resolveSessionKey("dead", false, nil, stateDir, pickerOptions{Verb: "attach", AliveOnly: true})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if code != 2 {
+		t.Errorf("code = %d, want 2", code)
+	}
+	if !strings.Contains(err.Error(), `"dead"`) {
+		t.Errorf("err = %q, want '\"dead\"' substring", err.Error())
+	}
+}
+
+// TestResolveSessionKey_AliveOnlyStrictBypassesFilter verifies that
+// --strict reaches dead sessions even when AliveOnly is set: --strict
+// goes through store.Resolve directly, never touching the picker
+// pipeline. Important so scripted use of --strict against any on-disk
+// key (alive or dead) keeps working for log/clone-from-recording flows.
+func TestResolveSessionKey_AliveOnlyStrictBypassesFilter(t *testing.T) {
+	t.Setenv("PATH", "")
+	fakeTTY(t, true)
+	stateDir := seedSessions(t, "deadabc")
+
+	key, code, err := resolveSessionKey("dead", true, nil, stateDir, pickerOptions{Verb: "log", AliveOnly: true})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if code != 0 || key != "deadabc" {
+		t.Fatalf("got (%q, %d), want (deadabc, 0)", key, code)
+	}
+}
+
+// TestResolveSessionKey_AliveOnlyFalseStillShowsDead is the negative
+// control: with AliveOnly=false (default), dead sessions stay in the
+// picker so the existing behavior of kill/clone/etc. tests doesn't
+// regress.
+func TestResolveSessionKey_AliveOnlyFalseStillShowsDead(t *testing.T) {
+	dir := fakeFZF(t)
+	fakeTTY(t, true)
+	stateDir := seedSessions(t, "deadaaa")
+	pickedLine := "1\t[deadaaa]\t@local\t/x\tsh\t(dead)\n"
+	if err := os.WriteFile(filepath.Join(dir, "picked-line"), []byte(pickedLine), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	key, code, err := resolveSessionKey("", false, nil, stateDir, pickerOptions{Verb: "log"})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if code != 0 || key != "deadaaa" {
+		t.Fatalf("got (%q, %d), want (deadaaa, 0)", key, code)
 	}
 }
