@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,5 +164,67 @@ func TestResolveLogFormatDefaults(t *testing.T) {
 
 	if _, err := resolveLogFormat("html"); err == nil {
 		t.Fatal("expected error on invalid format")
+	}
+}
+
+// TestCmdLog_AllFlagFlipsAliveOnly drives cmdLog through the picker
+// path on a state-dir that contains only a dead session.
+//
+//   - default (no --all): the picker is alive-only, the dead session
+//     gets filtered out, cmdLog returns "no live sessions" exit 2.
+//   - --all: the dead session shows in the picker, the fzf shim picks
+//     it, cmdLog reads its pty.hootty.log and prints the recorded
+//     plain text.
+//
+// Together these prove the --all flag is wired through to
+// pickerOptions.AliveOnly. Both --strict and the asciinema/vt
+// variants take the same resolveSessionKey path, so this one test
+// covers the flag-plumbing surface.
+func TestCmdLog_AllFlagFlipsAliveOnly(t *testing.T) {
+	fakeTTY(t, true)
+	fakeFZF(t)
+
+	stateDir := seedSessions(t, "deadrec1")
+	logPath := filepath.Join(stateDir, "deadrec1", "pty.hootty.log")
+	rec, err := session.NewRecorder(logPath, 80, 24)
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+	if _, err := rec.Write([]byte("hello\r\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Without --all: alive-only picker filters out the dead session →
+	// no candidates → "no live sessions" error.
+	err = cmdLog([]string{"--state-dir", stateDir, "--format", "plain"})
+	if err == nil {
+		t.Fatal("expected error without --all, got nil")
+	}
+	if !strings.Contains(err.Error(), "no live sessions") {
+		t.Errorf("err = %q, want 'no live sessions' substring", err.Error())
+	}
+
+	// With --all: the dead session shows in the picker, the shim picks
+	// the first row, cmdLog reads its recording. Capture stdout so the
+	// emitted plain text is observable.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	origStdout := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = origStdout }()
+
+	err = cmdLog([]string{"--state-dir", stateDir, "--format", "plain", "--all"})
+	w.Close()
+	if err != nil {
+		t.Fatalf("cmdLog --all: %v", err)
+	}
+	out, _ := io.ReadAll(r)
+	if !strings.Contains(string(out), "hello") {
+		t.Errorf("expected 'hello' in plain log output, got %q", string(out))
 	}
 }

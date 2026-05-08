@@ -93,7 +93,7 @@ Flags:
 		defer remote.Close()
 	}
 
-	source, code, err := resolveSessionKey(arg, *strict, remote, *stateDir, pickerOptions{Verb: "clone"})
+	source, code, err := resolveSessionKey(arg, *strict, remote, *stateDir, pickerOptions{Verb: "clone", AliveOnly: true})
 	if err != nil {
 		return &exitError{code: code, err: err}
 	}

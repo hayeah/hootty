@@ -35,6 +35,14 @@ type pickerOptions struct {
 	// Verb is used to build the prompt ("<verb>> ") and header
 	// ("↑↓ select · enter <verb> · esc cancel"). Defaults to "attach".
 	Verb string
+
+	// AliveOnly filters dead sessions out of the candidate list
+	// before id-prefix resolution and the fzf picker run. Set by
+	// verbs where dead sessions are dead-ends (attach, detach) or
+	// where dead-session noise in the picker isn't useful by default
+	// (log, unless --all). --strict bypasses the picker entirely
+	// and is unaffected.
+	AliveOnly bool
 }
 
 // runFZFPicker shells out to fzf to pick one session from states.
@@ -154,7 +162,19 @@ func resolveSessionKey(arg string, strict bool, remote *Remote, stateDir string,
 	if err != nil {
 		return "", 1, err
 	}
+	if opts.AliveOnly {
+		filtered := states[:0]
+		for _, sm := range states {
+			if sm.Alive {
+				filtered = append(filtered, sm)
+			}
+		}
+		states = filtered
+	}
 	if len(states) == 0 {
+		if opts.AliveOnly {
+			return "", 2, fmt.Errorf("no live sessions available")
+		}
 		return "", 2, fmt.Errorf("no sessions available")
 	}
 

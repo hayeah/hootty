@@ -31,10 +31,14 @@ func cmdLog(args []string) error {
 	fs := flag.NewFlagSet("log", flag.ContinueOnError)
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), `Usage:
-  hoot log [<id-or-prefix>] [--format vt|plain|asciinema] [--state-dir <d>] [--strict]
+  hoot log [<id-or-prefix>] [--format vt|plain|asciinema] [--state-dir <d>] [--strict] [--all]
 
 View a recorded session's PTY log. With no positional argument and on
 a tty, an interactive fzf picker resolves the session (matches `+"`hoot attach`"+`).
+Picker and id-prefix resolution show live sessions only by default;
+pass `+"`--all`"+` to include exited sessions (their recordings remain
+readable). `+"`--strict`"+` is unaffected — id-prefix resolution against
+the on-disk store always sees every session.
 
 Formats:
   vt        VT byte stream of the recorded session's final visible
@@ -52,18 +56,21 @@ Flags:
   --format <fmt>     vt | plain | asciinema (default: vt on tty, plain on pipe)
   --state-dir <d>    session state directory (default: ~/.hoot)
   --strict           exact id-prefix match only — no fzf, no picker
+  --all              include exited (dead) sessions in id-prefix and picker resolution
 
 Common usage:
   hoot log abc                              # screen render of the recording
   hoot log abc | less                       # paged plain text
   hoot log abc | grep -i error              # greppable plain text
   hoot log abc --format asciinema | asciinema play -
-  hoot log                                  # interactive picker
+  hoot log                                  # interactive picker (live only)
+  hoot log --all                            # picker over live + exited sessions
 `)
 	}
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
 	formatFlag := fs.String("format", "", "output format: vt|plain|asciinema (default vt on tty, plain on pipe)")
 	strict := fs.Bool("strict", false, "exact id-prefix match only — no fzf, no picker")
+	all := fs.Bool("all", false, "include exited (dead) sessions in id-prefix and picker resolution")
 	if err := fs.Parse(args); err != nil {
 		return &exitError{code: 2, err: err}
 	}
@@ -82,7 +89,7 @@ Common usage:
 		return &exitError{code: 2, err: err}
 	}
 
-	key, code, err := resolveSessionKey(target, *strict, nil, *stateDir, pickerOptions{Verb: "log"})
+	key, code, err := resolveSessionKey(target, *strict, nil, *stateDir, pickerOptions{Verb: "log", AliveOnly: !*all})
 	if err != nil {
 		return &exitError{code: code, err: err}
 	}
