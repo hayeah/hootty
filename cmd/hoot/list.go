@@ -9,17 +9,23 @@ import (
 	"os"
 
 	"github.com/hayeah/hootty"
+	"github.com/hayeah/hootty/internal/sessionpick"
 )
 
-// cmdList emits one JSON object per line — each line is a
-// session.StateFile serialized as-is. No bespoke list view, no
-// derived fields: callers that need liveness can probe the flock
-// themselves, or call `hoot resolve` and look at the session
-// PID.
+// cmdList renders the local (or `--remote`) session list. By default
+// it prints one human-readable line per live session — the same line
+// shape the fzf picker matches against (see sessionpick.Format).
+//
+//   - default: pretty lines, alive only
+//   - --all: include exited sessions (rendered with a `(dead)` tag)
+//   - --json: emit JSONL of session.StateFile (the original
+//     scripting-friendly shape). Honors --all the same way.
 func cmdList(args []string) error {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
 	remoteFlag := fs.String("remote", "", "remote hoot serve URL (host, user@host, host:port — defaults to ssh://; or http(s)://host:port, ssh://host)")
+	jsonOut := fs.Bool("json", false, "emit JSONL of session.StateFile instead of human-readable lines")
+	all := fs.Bool("all", false, "include exited (dead) sessions; default is live only")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -30,42 +36,34 @@ func cmdList(args []string) error {
 	}
 	if remote != nil {
 		defer remote.Close()
-		resp, err := httpClient(remote).Get("http://hoot/sessions")
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return remoteResponseError(resp)
-		}
-		var body struct {
-			Sessions []struct {
-				session.StateFile
-				Alive bool `json:"alive"`
-			} `json:"sessions"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-			return err
-		}
+	}
+
+	states, err := loadSessionList(remote, *stateDir)
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
 		enc := json.NewEncoder(os.Stdout)
-		for _, st := range body.Sessions {
-			if err := enc.Encode(st.StateFile); err != nil {
+		for _, sm := range states {
+			if !*all && !sm.Alive {
+				continue
+			}
+			if sm.State == nil {
+				continue
+			}
+			if err := enc.Encode(sm.State); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
 
-	store := session.NewStore(*stateDir)
-	states, err := store.List()
-	if err != nil {
-		return err
-	}
-	enc := json.NewEncoder(os.Stdout)
-	for _, st := range states {
-		if err := enc.Encode(st); err != nil {
-			return err
+	for _, sm := range states {
+		if !*all && !sm.Alive {
+			continue
 		}
+		fmt.Println(sessionpick.Format(sm))
 	}
 	return nil
 }
