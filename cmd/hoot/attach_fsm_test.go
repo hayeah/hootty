@@ -35,7 +35,6 @@ func runFSMOnBytes(prefix byte, in []byte) *fsmRecord {
 		literal: func() { rec.actions = append(rec.actions, "literal") },
 		detach:  func() { rec.actions = append(rec.actions, "detach") },
 		suspend: func() { rec.actions = append(rec.actions, "suspend") },
-		help:    func() { rec.actions = append(rec.actions, "help") },
 		clone: func() error {
 			rec.actions = append(rec.actions, "clone")
 			return nil
@@ -270,8 +269,8 @@ func TestIsPrefixKey(t *testing.T) {
 }
 
 // TestRunChordFSM_OtherChordsCSIu spot-checks the remaining chord
-// vocabulary (literal-prefix, suspend, help, clone) under kitty
-// encoding to confirm the matcher generalizes beyond detach.
+// vocabulary (literal-prefix, suspend, clone) under kitty encoding
+// to confirm the matcher generalizes beyond detach.
 func TestRunChordFSM_OtherChordsCSIu(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -281,13 +280,37 @@ func TestRunChordFSM_OtherChordsCSIu(t *testing.T) {
 		{"literal-prefix via ctrl+shift+^", []byte("\x1b[94;6u\x1b[94;6u"), "literal"},
 		{"suspend via ctrl+z", []byte("\x1b[94;6u\x1b[122;5u"), "suspend"},
 		{"clone via 'c'", []byte("\x1b[94;6u\x1b[99u"), "clone"},
-		{"help via '?'", []byte("\x1b[94;6u\x1b[63u"), "help"},
 	}
 	for _, c := range cases {
 		r := runFSMOnBytes(0x1e, c.bytes)
 		if !reflect.DeepEqual(r.actions, []string{c.action}) {
 			t.Errorf("%s: actions = %v, want [%s]", c.name, r.actions, c.action)
 		}
+	}
+}
+
+// TestRunChordFSM_QuestionMarkChordRemoved verifies that `<prefix> ?`
+// is now a no-op. The chord was dropped when the on-demand HUD print
+// was replaced with a one-shot scrollback line at attach time. The
+// prefix and follow-up bytes are silently consumed (matching the
+// existing "unknown follow-up" behavior); no actions fire and no
+// bytes are forwarded to the inner program.
+func TestRunChordFSM_QuestionMarkChordRemoved(t *testing.T) {
+	// Legacy single-byte encoding: prefix then '?'.
+	r := runFSMOnBytes(0x1e, []byte{0x1e, '?'})
+	if len(r.actions) != 0 {
+		t.Errorf("legacy <prefix> ? actions = %v, want none", r.actions)
+	}
+	if len(r.forwarded) != 0 {
+		t.Errorf("legacy <prefix> ? forwarded = %q, want empty", r.forwarded)
+	}
+	// CSI u encoding: ctrl+shift+^ then '?'.
+	r = runFSMOnBytes(0x1e, []byte("\x1b[94;6u\x1b[63u"))
+	if len(r.actions) != 0 {
+		t.Errorf("CSIu <prefix> ? actions = %v, want none", r.actions)
+	}
+	if len(r.forwarded) != 0 {
+		t.Errorf("CSIu <prefix> ? forwarded = %q, want empty", r.forwarded)
 	}
 }
 
@@ -301,7 +324,6 @@ func TestRunChordFSM_CloneError(t *testing.T) {
 		literal:      func() {},
 		detach:       func() {},
 		suspend:      func() {},
-		help:         func() {},
 		clone:        func() error { return errors.New("boom") },
 	}
 	runChordFSM(0x1e, read, act, stderr)

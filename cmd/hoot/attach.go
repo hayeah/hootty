@@ -411,7 +411,7 @@ func runAttachLoop(initial attachTarget, prefixByte byte, reconnect bool, hud *h
 			targets.set(next)
 			shared.markSwitched()
 			return nil
-		}, writers.stdout, writers.stderr, hud)
+		}, writers.stderr)
 	}()
 
 	// Reconnect loop.
@@ -660,9 +660,8 @@ func runSession(
 //	<prefix> .       detach (cancel ctx)
 //	<prefix> ^       send a literal prefix byte to the remote
 //	<prefix> Ctrl-Z  SIGTSTP self (resume with fg)
-//	<prefix> ?       print HUD line + one-line chord help on stdout
 //	<prefix> c       clone current session and switch to it
-func runStdinFSM(ctx context.Context, prefix byte, shared *sharedSession, cancel context.CancelFunc, clone func(context.Context) error, stdout, stderr io.Writer, hud *hudState) {
+func runStdinFSM(ctx context.Context, prefix byte, shared *sharedSession, cancel context.CancelFunc, clone func(context.Context) error, stderr io.Writer) {
 	readCh := make(chan byteOrErr, 1)
 	go func() {
 		buf := make([]byte, 1)
@@ -694,16 +693,6 @@ func runStdinFSM(ctx context.Context, prefix byte, shared *sharedSession, cancel
 		},
 		suspend: func() {
 			_ = syscall.Kill(os.Getpid(), syscall.SIGTSTP)
-		},
-		help: func() {
-			// `<prefix> ?` prints the session HUD plus the chord
-			// vocabulary. The HUD answers "which session am I in?";
-			// the chord help answers "what else can I do?". Both go
-			// to stdout — this is intentional output, not error
-			// reporting, and keeps it visible across redirects of
-			// stderr (e.g. when the user wraps `hoot attach` in a
-			// shell function that swallows stderr).
-			hud.printChord(stdout)
 		},
 		clone: func() error {
 			return clone(ctx)

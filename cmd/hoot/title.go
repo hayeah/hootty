@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"io"
 	"strings"
 	"sync/atomic"
@@ -82,10 +81,10 @@ func needsSanitize(s string) bool {
 // hudState owns the HUD line for an attach session and the title-stack
 // emit/pop bookkeeping. One instance per `hoot attach` invocation.
 //
-// The two emission surfaces — onAttach (push+set on connect) and
-// printChord (HUD line on `<prefix> ?`) — both depend on the same
-// data, so we keep them on one struct rather than passing the bare
-// string around.
+// The HUD line is consumed in two places — onAttach pushes and sets
+// the terminal title, and runServerLoop prints it as a one-shot
+// scrollback line at attach time — so we keep them on one struct
+// rather than passing the bare string around.
 type hudState struct {
 	line   string
 	isTTY  bool
@@ -124,23 +123,11 @@ func (h *hudState) onDetach(w io.Writer) {
 	}
 }
 
-// printChord writes the HUD line plus the chord vocabulary to w in
-// response to `<prefix> ?`. The leading and trailing CRLF make it
-// land cleanly on a fresh line when an inner TUI doesn't repaint
-// immediately. Two lines total: HUD on the first, chord help on the
-// second. Both go to stdout per spec ("emits the HUD line to local
-// stdout").
-//
-// The dim-attribute SGR keeps the print visually distinct from
-// program output without being intrusive.
-func (h *hudState) printChord(w io.Writer) {
-	if h == nil || w == nil {
-		return
+// Line returns the formatted HUD line, or "" if the state.json
+// load missed (in which case callers suppress emission entirely).
+func (h *hudState) Line() string {
+	if h == nil {
+		return ""
 	}
-	hud := h.line
-	if hud == "" {
-		hud = "🦉 (session info unavailable)"
-	}
-	fmt.Fprintf(w, "\r\n\x1b[2m%s\x1b[0m\r\n", hud)
-	fmt.Fprintf(w, "\x1b[2m[hoot] commands: \".\" detach · \"^\" literal prefix · \"Ctrl-Z\" suspend · \"c\" clone · \"?\" help\x1b[0m\r\n")
+	return h.line
 }
