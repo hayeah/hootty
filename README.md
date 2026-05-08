@@ -133,6 +133,23 @@ auto-promote to interactive on a tty, and skipping `-l` avoids
 re-running profile files that the parent already loaded. Use
 `hoot run -- bash -l` if you need a true login shell.
 
+#### Nested attaches are refused
+
+Every spawned hoot session sets `HOOT_SESSION=<key>` in the shell's
+environment. The terminal-takeover paths — bare `hoot`, `hoot @host`,
+`hoot host`, `hoot attach`, and `hoot run --attach` — read that env
+on entry and refuse with a tmux-shaped error:
+
+```
+hoot attach: sessions should be nested with care, unset $HOOT_SESSION to force (already attached to "abc123")
+```
+
+Read-only verbs (`hoot list`, `hoot log`, `hoot resolve`, `hoot kill`,
+`hoot detach`, `hoot write`) still work inside a session, as does
+fire-and-forget `hoot run` (without `--attach`). To genuinely nest —
+e.g. for a hoot inside a hoot for testing — `unset HOOT_SESSION`
+first.
+
 `--state-dir` defaults to `~/.hoot` for every subcommand.
 
 `--remote` targets another host for session-facing subcommands:
