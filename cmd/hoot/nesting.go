@@ -27,3 +27,18 @@ func errIfNestedHootSession(verb string) error {
 		hootSessionEnv, key,
 	)
 }
+
+// errIfSelfLogSession refuses the self-feedback shape where `hoot log`
+// is run inside the same session it is viewing and writes the rendered
+// recording back to that session's PTY. That stdout path appends the
+// recording to itself.
+func errIfSelfLogSession(key, outputPath string) error {
+	current := os.Getenv(hootSessionEnv)
+	if current == "" || current != key || outputPath != "" {
+		return nil
+	}
+	return fmt.Errorf(
+		"sessions should be logged with care, use --output FILE to dump this session's log from inside itself (already attached to %q)",
+		current,
+	)
+}

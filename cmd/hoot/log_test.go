@@ -3,12 +3,18 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
+	"github.com/creack/pty"
 	"github.com/hayeah/hootty"
 )
 
@@ -137,6 +143,105 @@ func TestCmdLogAsciinema(t *testing.T) {
 	}
 }
 
+func TestCmdLogRefusesCurrentSessionToStdout(t *testing.T) {
+	stateDir := t.TempDir()
+	writeLogFixture(t, stateDir, "self123", "seed-line\r\n")
+	t.Setenv(hootSessionEnv, "self123")
+
+	err := cmdLog([]string{"--state-dir", stateDir, "--strict", "--format", "plain", "self123"})
+	var ee *exitError
+	if !errors.As(err, &ee) || ee.code != 2 {
+		t.Fatalf("cmdLog err = %v, want exitError code 2", err)
+	}
+	for _, want := range []string{"sessions should be logged with care", "--output FILE", "self123"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error missing %q: %v", want, err)
+		}
+	}
+}
+
+func TestCmdLogOutputAllowsCurrentSession(t *testing.T) {
+	stateDir := t.TempDir()
+	writeLogFixture(t, stateDir, "self123", "seed-line\r\n")
+	outPath := filepath.Join(t.TempDir(), "self.txt")
+	t.Setenv(hootSessionEnv, "self123")
+
+	stdout := captureStdout(t, func() {
+		if err := cmdLog([]string{"--state-dir", stateDir, "--strict", "--format", "plain", "--output", outPath, "self123"}); err != nil {
+			t.Fatalf("cmdLog --output: %v", err)
+		}
+	})
+	if stdout != "" {
+		t.Fatalf("--output wrote to stdout: %q", stdout)
+	}
+	raw, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if !strings.Contains(string(raw), "seed-line") {
+		t.Fatalf("output missing recording content: %q", string(raw))
+	}
+}
+
+func TestCmdLogOutputRejectsSourceRecording(t *testing.T) {
+	stateDir := t.TempDir()
+	logPath := writeLogFixture(t, stateDir, "self123", "seed-line\r\n")
+
+	err := cmdLog([]string{"--state-dir", stateDir, "--strict", "--format", "plain", "--output", logPath, "self123"})
+	var ee *exitError
+	if !errors.As(err, &ee) || ee.code != 2 {
+		t.Fatalf("cmdLog err = %v, want exitError code 2", err)
+	}
+	if !strings.Contains(err.Error(), "must not overwrite the source recording") {
+		t.Fatalf("error missing source overwrite message: %v", err)
+	}
+}
+
+func TestCmdLogInsideSessionRefusesSelfAppendE2E(t *testing.T) {
+	stateDir := shortTempDir(t)
+	helper := withHootHelperExecutable(t)
+
+	spawnTestSession(t, stateDir, "self123", []string{
+		"bash", "-lc",
+		fmt.Sprintf("printf 'seed-line\\r\\n'; %q log --state-dir %q --format plain --strict \"$HOOT_SESSION\"; printf 'status=%%s\\r\\n' \"$?\"; sleep 1", helper, stateDir),
+	})
+	waitSessionExited(t, stateDir, "self123")
+
+	got := recordedOutput(t, stateDir, "self123")
+	if count := strings.Count(got, "seed-line"); count != 1 {
+		t.Fatalf("self log appears appended; seed-line count=%d output=%q", count, got)
+	}
+	if !strings.Contains(got, "sessions should be logged with care") {
+		t.Fatalf("recorded output missing refusal: %q", got)
+	}
+	if !strings.Contains(got, "status=2") {
+		t.Fatalf("recorded output missing exit status: %q", got)
+	}
+}
+
+func TestCmdLogInsideSessionAllowsOtherSessionE2E(t *testing.T) {
+	stateDir := shortTempDir(t)
+	writeLogFixture(t, stateDir, "other1", "other-line\r\n")
+	helper := withHootHelperExecutable(t)
+
+	spawnTestSession(t, stateDir, "self123", []string{
+		"bash", "-lc",
+		fmt.Sprintf("%q log --state-dir %q --format plain --strict other1; printf 'status=%%s\\r\\n' \"$?\"; sleep 1", helper, stateDir),
+	})
+	waitSessionExited(t, stateDir, "self123")
+
+	got := recordedOutput(t, stateDir, "self123")
+	if !strings.Contains(got, "other-line") {
+		t.Fatalf("recorded output missing other session log: %q", got)
+	}
+	if !strings.Contains(got, "status=0") {
+		t.Fatalf("recorded output missing success status: %q", got)
+	}
+	if strings.Contains(got, "sessions should be logged with care") {
+		t.Fatalf("other session log was refused: %q", got)
+	}
+}
+
 // TestResolveLogFormatDefaults verifies the tty/pipe defaults and
 // invalid-flag error path.
 func TestResolveLogFormatDefaults(t *testing.T) {
@@ -185,21 +290,11 @@ func TestCmdLog_AllFlagFlipsAliveOnly(t *testing.T) {
 	fakeFZF(t)
 
 	stateDir := seedSessions(t, "deadrec1")
-	logPath := filepath.Join(stateDir, "deadrec1", "pty.hootty.log")
-	rec, err := session.NewRecorder(logPath, 80, 24)
-	if err != nil {
-		t.Fatalf("NewRecorder: %v", err)
-	}
-	if _, err := rec.Write([]byte("hello\r\n")); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if err := rec.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	writeLogFixture(t, stateDir, "deadrec1", "hello\r\n")
 
 	// Without --all: alive-only picker filters out the dead session →
 	// no candidates → "no live sessions" error.
-	err = cmdLog([]string{"--state-dir", stateDir, "--format", "plain"})
+	err := cmdLog([]string{"--state-dir", stateDir, "--format", "plain"})
 	if err == nil {
 		t.Fatal("expected error without --all, got nil")
 	}
@@ -227,4 +322,159 @@ func TestCmdLog_AllFlagFlipsAliveOnly(t *testing.T) {
 	if !strings.Contains(string(out), "hello") {
 		t.Errorf("expected 'hello' in plain log output, got %q", string(out))
 	}
+}
+
+func writeLogFixture(t *testing.T, stateDir, key, payload string) string {
+	t.Helper()
+	keyDir := filepath.Join(stateDir, key)
+	if err := os.MkdirAll(keyDir, 0o755); err != nil {
+		t.Fatalf("mkdir key dir: %v", err)
+	}
+	stateJSON := fmt.Sprintf(`{"session":{"key":%q,"argv":["bash"],"cwd":%q,"created_at":"2026-05-08T00:00:00Z","size":{"cols":80,"rows":24}}}`, key, stateDir)
+	if err := os.WriteFile(filepath.Join(keyDir, "state.json"), []byte(stateJSON), 0o644); err != nil {
+		t.Fatalf("write state.json: %v", err)
+	}
+	logPath := filepath.Join(keyDir, "pty.hootty.log")
+	rec, err := session.NewRecorder(logPath, 80, 24)
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+	if _, err := rec.Write([]byte(payload)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	return logPath
+}
+
+func recordedOutput(t *testing.T, stateDir, key string) string {
+	t.Helper()
+	events, err := session.ReadOutputEvents(filepath.Join(stateDir, key, "pty.hootty.log"), 0)
+	if err != nil {
+		t.Fatalf("ReadOutputEvents: %v", err)
+	}
+	var out strings.Builder
+	for _, ev := range events {
+		out.Write(ev.Data)
+	}
+	return out.String()
+}
+
+func waitSessionExited(t *testing.T, stateDir, key string) {
+	t.Helper()
+	statePath := filepath.Join(stateDir, key, "state.json")
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		raw, err := os.ReadFile(statePath)
+		if err == nil && strings.Contains(string(raw), `"state": "exited"`) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for %s to exit", key)
+}
+
+func spawnTestSession(t *testing.T, stateDir, key string, argv []string) {
+	t.Helper()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatalf("pty.Open: %v", err)
+	}
+	if err := pty.Setsize(slave, &pty.Winsize{Cols: 80, Rows: 24}); err != nil {
+		t.Fatalf("setsize: %v", err)
+	}
+	self, err := hootExecutable()
+	if err != nil {
+		t.Fatalf("hootExecutable: %v", err)
+	}
+	args := []string{
+		"__session",
+		"--state-dir", stateDir,
+		"--key", key,
+		"--cwd", cwd,
+		"--",
+	}
+	args = append(args, argv...)
+	cmd := exec.Command(self, args...)
+	cmd.Dir = cwd
+	cmd.Env = append(os.Environ(), "HOOT_TEST_HELPER_PROCESS=1")
+	cmd.Stdin = slave
+	cmd.Stdout = slave
+	cmd.Stderr = slave
+	cmd.ExtraFiles = []*os.File{master}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper session: %v", err)
+	}
+	_ = slave.Close()
+	_ = master.Close()
+	_ = cmd.Process.Release()
+
+	sockPath := filepath.Join(stateDir, key, "rpc.sock")
+	if err := waitForSocket(sockPath, 10*time.Second); err != nil {
+		dumpSessionDebug(t, stateDir, key)
+		t.Fatalf("wait for socket: %v", err)
+	}
+}
+
+func dumpSessionDebug(t *testing.T, stateDir, key string) {
+	t.Helper()
+	for _, name := range []string{"session.log", "state.json"} {
+		raw, err := os.ReadFile(filepath.Join(stateDir, key, name))
+		if err == nil {
+			t.Logf("%s:\n%s", name, raw)
+		}
+	}
+}
+
+func withHootHelperExecutable(t *testing.T) string {
+	t.Helper()
+	testExe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	old := hootExecutable
+	hootExecutable = func() (string, error) { return testExe, nil }
+	t.Cleanup(func() { hootExecutable = old })
+	return testExe
+}
+
+func TestMain(m *testing.M) {
+	if os.Getenv("HOOT_TEST_HELPER_PROCESS") != "1" {
+		os.Exit(m.Run())
+	}
+	os.Exit(runHootTestHelper(os.Args[1:]))
+}
+
+func runHootTestHelper(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "missing helper command")
+		return 2
+	}
+	var err error
+	switch args[0] {
+	case "__session":
+		err = cmdSession(args[1:])
+	case "log":
+		err = cmdLog(args[1:])
+	default:
+		err = fmt.Errorf("unexpected helper command %q", args[0])
+	}
+	if err != nil {
+		var ee *exitError
+		if errors.As(err, &ee) {
+			if ee.err != nil {
+				fmt.Fprintf(os.Stderr, "hoot %s: %v\n", args[0], ee.err)
+			}
+			return ee.code
+		}
+		fmt.Fprintf(os.Stderr, "hoot %s: %v\n", args[0], err)
+		return 1
+	}
+	return 0
 }
