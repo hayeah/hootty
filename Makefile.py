@@ -25,7 +25,7 @@ Usage:
 
 from pathlib import Path
 
-from pymake import sh, task, tree_digest
+from pymake import sh, task
 
 # ---- pinned versions (bump when go-libghostty bumps Ghostty) -----------------
 
@@ -92,17 +92,26 @@ def hoot_tarball(t: str) -> Path:
 
 CHECKSUMS = DIST / "checksums.txt"
 
-# Source-tree digest for hoot itself. Gates per-target Go rebuilds on real
-# source change. Excludes the build/dist trees and the worktree's go.work
-# (which is gitignored anyway).
-HOOT_SRC_DIGEST = tree_digest(
-    REPO / "cmd",
-    REPO / "internal",
-    REPO,  # picks up go.mod / go.sum / *.go at the root
-    digest=BUILD / "hoot-src.digest",
-    exclude=[".build/", "dist/", ".worktrees/", "node_modules/"],
-    globs=["**/*.go", "**/go.mod", "**/go.sum"],
-)
+
+# ---- Go source enumeration --------------------------------------------------
+#
+# Per-target Go builds re-run when any non-test .go file under cmd/ + internal/
+# (or repo-root .go files, or go.mod / go.sum) is newer than the binary.
+# `tree_digest.changed` would be cleaner, but its post-body auto-commit means
+# only one of N consumers ever sees "changed=True" per pymake invocation; with
+# three target builds sharing one digest, two of them silently skip even when
+# their output is missing. Explicit input enumeration sidesteps the problem.
+def _go_source_inputs():
+    paths: list[Path] = []
+    for pattern in ("*.go", "cmd/**/*.go", "internal/**/*.go"):
+        paths.extend(REPO.glob(pattern))
+    paths = [p for p in paths if not p.name.endswith("_test.go")]
+    paths.append(REPO / "go.mod")
+    paths.append(REPO / "go.sum")
+    return sorted(set(paths))
+
+
+HOOT_SOURCES = _go_source_inputs()
 
 
 # ---- ghostty:fetch -----------------------------------------------------------
@@ -163,4 +172,96 @@ def libghostty():
     pass
 
 
-task.default(libghostty)
+# ---- hoot:[T] (per target) --------------------------------------------------
+
+
+def _register_hoot_builds():
+    for t, meta in TARGETS.items():
+        os_, arch, triple = meta["os"], meta["arch"], meta["zig_triple"]
+        is_linux = meta["linux"]
+        binary = hoot_binary(t)
+        archive = libghostty_archive(t)
+        pkgconfig = libghostty_pkgconfig(t)
+
+        def build(
+            version: str = "dev",
+            os_=os_,
+            arch=arch,
+            triple=triple,
+            is_linux=is_linux,
+            binary=binary,
+            pkgconfig=pkgconfig,
+        ):
+            binary.parent.mkdir(parents=True, exist_ok=True)
+            ldflags = f"-s -w -X main.Version={version}"
+            cc_prefix = ""
+            if is_linux:
+                ldflags += " -extldflags=-static"
+                cc_prefix = f"CC='zig cc -target {triple}' "
+            sh(
+                f"PKG_CONFIG_PATH={pkgconfig} "
+                f"CGO_ENABLED=1 GOOS={os_} GOARCH={arch} GOWORK=off "
+                f"{cc_prefix}"
+                f"go -C {REPO} build -trimpath "
+                f"-ldflags \"{ldflags}\" "
+                f"-o {binary} ./cmd/hoot"
+            )
+
+        task.register(
+            build,
+            name=f"hoot:{t}",
+            inputs=[archive, *HOOT_SOURCES],
+            outputs=[binary],
+        )
+
+
+_register_hoot_builds()
+
+
+# ---- tarball:[T] (per target) -----------------------------------------------
+
+
+def _register_tarballs():
+    license_path = REPO / "LICENSE"
+    readme_path = REPO / "README.md"
+    extras = [readme_path]
+    if license_path.exists():
+        extras.append(license_path)
+
+    for t in TARGETS:
+        binary = hoot_binary(t)
+        tarball = hoot_tarball(t)
+        stage = binary.parent
+
+        def build(t=t, binary=binary, tarball=tarball, stage=stage, extras=extras):
+            for extra in extras:
+                sh(f"cp {extra} {stage}/")
+            sh(f"tar -czf {tarball} -C {stage} .")
+
+        task.register(
+            build,
+            name=f"tarball:{t}",
+            inputs=[binary, *extras],
+            outputs=[tarball],
+        )
+
+
+_register_tarballs()
+
+
+# ---- top-level meta tasks ---------------------------------------------------
+
+
+@task(inputs=[hoot_binary(t) for t in TARGETS])
+def build():
+    """Build hoot for every target (no tarballing)."""
+    pass
+
+
+@task(inputs=[hoot_tarball(t) for t in TARGETS])
+def tarballs():
+    """Build all tarballs."""
+    pass
+
+
+task.default(build)
