@@ -144,7 +144,7 @@ retries forever. Press any key to wake the backoff and retry now.
 		reconnect = !attachOpts.NoReconnect
 	}
 
-	key, code, err := resolveSessionKey(arg, *strict, remote, *stateDir, pickerOptions{Verb: "attach"})
+	key, code, err := resolveSessionKey(arg, *strict, remote, *stateDir, pickerOptions{Verb: "attach", AliveOnly: true})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "hoot attach: %v\n", err)
 		return code

@@ -97,7 +97,7 @@ Flags:
 		defer remote.Close()
 	}
 
-	sessKey, code, err := resolveSessionKey(sessPrefix, *strict, remote, *stateDir, pickerOptions{Verb: "detach"})
+	sessKey, code, err := resolveSessionKey(sessPrefix, *strict, remote, *stateDir, pickerOptions{Verb: "detach", AliveOnly: true})
 	if err != nil {
 		return &exitError{code: code, err: err}
 	}

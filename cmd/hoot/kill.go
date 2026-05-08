@@ -96,7 +96,7 @@ Flags:
 		defer remote.Close()
 	}
 
-	key, code, err := resolveSessionKey(arg, *strict, remote, *stateDir, pickerOptions{Verb: "kill"})
+	key, code, err := resolveSessionKey(arg, *strict, remote, *stateDir, pickerOptions{Verb: "kill", AliveOnly: true})
 	if err != nil {
 		return &exitError{code: code, err: err}
 	}
