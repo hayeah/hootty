@@ -23,6 +23,9 @@ Usage:
   pymake release --vars release.version=v0.0.1
 """
 
+import os
+import shlex
+import subprocess
 from pathlib import Path
 
 from pymake import sh, task
@@ -91,6 +94,14 @@ def hoot_tarball(t: str) -> Path:
 
 
 CHECKSUMS = DIST / "checksums.txt"
+
+
+# ---- Version -----------------------------------------------------------------
+#
+# HOOT_VERSION env var threads the release tag through hoot:[T] -> tarball:[T] ->
+# checksums -> release. "dev" is the unreleased default. The release task refuses
+# to publish unless HOOT_VERSION is set to a real semver tag and matches HEAD.
+HOOT_VERSION = os.environ.get("HOOT_VERSION", "dev")
 
 
 # ---- Go source enumeration --------------------------------------------------
@@ -184,7 +195,6 @@ def _register_hoot_builds():
         pkgconfig = libghostty_pkgconfig(t)
 
         def build(
-            version: str = "dev",
             os_=os_,
             arch=arch,
             triple=triple,
@@ -193,7 +203,7 @@ def _register_hoot_builds():
             pkgconfig=pkgconfig,
         ):
             binary.parent.mkdir(parents=True, exist_ok=True)
-            ldflags = f"-s -w -X main.Version={version}"
+            ldflags = f"-s -w -X main.Version={HOOT_VERSION}"
             cc_prefix = ""
             if is_linux:
                 ldflags += " -extldflags=-static"
@@ -262,6 +272,104 @@ def build():
 def tarballs():
     """Build all tarballs."""
     pass
+
+
+# ---- checksums --------------------------------------------------------------
+
+
+@task(inputs=[hoot_tarball(t) for t in TARGETS], outputs=[CHECKSUMS])
+def checksums():
+    """SHA-256 of all tarballs into dist/checksums.txt."""
+    sh(f"cd {DIST} && shasum -a 256 hoot-*.tar.gz > checksums.txt")
+
+
+# ---- release (phony) --------------------------------------------------------
+
+
+def _check_clean_tree():
+    """Refuse to release if the worktree has uncommitted or staged changes."""
+    if subprocess.run(["git", "diff", "--quiet"], cwd=REPO).returncode != 0:
+        raise SystemExit("release: working tree has uncommitted changes")
+    if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=REPO).returncode != 0:
+        raise SystemExit("release: staged changes are not committed")
+
+
+def _check_tag_matches_head(version: str):
+    """HEAD must be at exactly the tag we're releasing."""
+    res = subprocess.run(
+        ["git", "describe", "--exact-match", "HEAD"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+    )
+    if res.returncode != 0:
+        raise SystemExit(
+            f"release: HEAD is not on a tag. Run `git tag {version}` first."
+        )
+    found = res.stdout.strip()
+    if found != version:
+        raise SystemExit(
+            f"release: HEAD tag is {found!r}, expected {version!r}. Aborting."
+        )
+
+
+def _check_release_does_not_exist(version: str):
+    """gh release view returns 0 if the release exists; we want it to NOT exist."""
+    res = subprocess.run(
+        ["gh", "release", "view", version],
+        cwd=REPO,
+        capture_output=True,
+    )
+    if res.returncode == 0:
+        raise SystemExit(
+            f"release: GitHub release {version} already exists. "
+            "Delete it manually if you really want to recreate."
+        )
+
+
+def _check_gh_auth():
+    res = subprocess.run(["gh", "auth", "status"], capture_output=True)
+    if res.returncode != 0:
+        raise SystemExit("release: gh CLI is not authenticated. Run `gh auth login`.")
+
+
+@task()
+def release():
+    """Cut a GitHub release for $HOOT_VERSION (must be set, must match HEAD tag)."""
+    if HOOT_VERSION == "dev":
+        raise SystemExit(
+            "release: HOOT_VERSION not set. Invoke as: "
+            "HOOT_VERSION=v0.0.1 pymake release"
+        )
+
+    _check_clean_tree()
+    _check_tag_matches_head(HOOT_VERSION)
+    _check_release_does_not_exist(HOOT_VERSION)
+    _check_gh_auth()
+
+    # The hoot binary embeds Version via -ldflags. If dist/ already has binaries
+    # built under a different HOOT_VERSION (e.g. "dev"), we'd ship a binary whose
+    # `hoot version` disagrees with the tag. Wipe and rebuild to be safe.
+    if DIST.exists():
+        sh(f"rm -rf {DIST}")
+
+    # Re-invoke pymake to rebuild from scratch with the current HOOT_VERSION env.
+    # `tarballs` triggers hoot:[T] -> tarball:[T] -> tarballs. Then `checksums`.
+    sh(f"HOOT_VERSION={shlex.quote(HOOT_VERSION)} pymake tarballs checksums")
+
+    notes = (
+        f"hoot {HOOT_VERSION}\n\n"
+        "See https://github.com/hayeah/hootty/blob/master/README.md for usage."
+    )
+    is_prerelease = "0.0." in HOOT_VERSION  # v0.0.x is pre-stability per spec
+    flags = "--prerelease " if is_prerelease else ""
+    sh(
+        f"cd {DIST} && gh release create {HOOT_VERSION} "
+        f"--title {HOOT_VERSION} {flags}"
+        f"--notes {shlex.quote(notes)} "
+        f"hoot-darwin-arm64.tar.gz hoot-linux-amd64.tar.gz hoot-linux-arm64.tar.gz "
+        f"checksums.txt"
+    )
 
 
 task.default(build)
