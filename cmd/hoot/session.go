@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/creack/pty"
 
@@ -78,10 +77,7 @@ func cmdSession(args []string) error {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 
-	rec, err := session.NewRecorder(filepath.Join(dir, "pty.cast"), cols, rows,
-		session.WithRecorderCommand(strings.Join(rest, " ")),
-		session.WithRecorderTitle(*key),
-	)
+	rec, err := session.NewRecorder(filepath.Join(dir, "pty.hootty.log"), cols, rows)
 	if err != nil {
 		return fmt.Errorf("recorder: %w", err)
 	}

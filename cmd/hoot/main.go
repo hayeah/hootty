@@ -1,7 +1,7 @@
 // Command hoot is a small reference consumer of the session
 // library: it spawns a single process on a libghostty-backed PTY,
-// records output to <dir>/<key>/pty.cast, and serves the session
-// mux on <dir>/<key>/rpc.sock.
+// records output to <dir>/<key>/pty.hootty.log, and serves the
+// session mux on <dir>/<key>/rpc.sock.
 //
 // Subcommands:
 //
@@ -24,6 +24,7 @@ var knownSubcommands = map[string]bool{
 	"run":       true,
 	"list":      true,
 	"ls":        true,
+	"log":       true,
 	"resolve":   true,
 	"attach":    true,
 	"clone":     true,
@@ -55,6 +56,8 @@ func main() {
 		err = cmdRun(shellArgs)
 	case "list", "ls":
 		err = cmdList(shellArgs)
+	case "log":
+		err = cmdLog(shellArgs)
 	case "resolve":
 		err = cmdResolve(shellArgs)
 	case "attach":
@@ -165,6 +168,8 @@ Usage:
                     [--cwd <path>] [--env NAME[=VALUE]] [--env-file <path>]
                     -- <cmd> [args...]
   hoot list    [--remote <url>] [--state-dir <d>]
+  hoot log     [--state-dir <d>] [--strict]
+                    [--format vt|plain|asciinema] [<id-or-prefix>]
   hoot resolve [--remote <url>] [--state-dir <d>] <id-or-prefix>
   hoot clone   [--remote <url>] [--state-dir <d>] [--key <new-key>]
                     [--env NAME[=VALUE]] [--env-file <path>]
@@ -179,9 +184,15 @@ Usage:
   hoot serve   [--state-dir <d>] --bind <host:port|unix:/path.sock> [--prefix /api]
 
 The session state directory is <state-dir>/<key>/. The session
-serves rpc.sock and writes pty.cast inside it. --state-dir defaults
-to ~/.hoot. If --key is omitted, a random short id (3-8 chars
-from 0-9a-z minus l/o) is generated.
+serves rpc.sock and writes pty.hootty.log inside it. --state-dir
+defaults to ~/.hoot. If --key is omitted, a random short id (3-8
+chars from 0-9a-z minus l/o) is generated.
+
+`+"`hoot log`"+` views a recording: the default format is `+"`vt`"+` on a
+tty (replays the recording into a fresh libghostty terminal and
+emits its visible state) and `+"`plain`"+` on a pipe (greppable text).
+The `+"`asciinema`"+` format emits asciicast v2 JSONL — pipe to
+`+"`asciinema play -`"+` to replay at recorded timing.
 
 Anywhere a session key is accepted, you can pass either the full id
 or any unique prefix (minimum 3 characters). Ambiguous prefixes

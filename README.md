@@ -1,8 +1,8 @@
 # hootty
 
 A small Go library + reference CLI that manages a single child process.
-The child is spawned on a libghostty-backed PTY; its output is recorded as an
-asciicast v2 JSONL file for replay; and the current screen state is exposed through an
+The child is spawned on a libghostty-backed PTY; its output is recorded as a
+binary `hootty.log v1` frame stream for replay; and the current screen state is exposed through an
 embeddable `http.ServeMux` (plain text / HTML / raw VT).
 
 Project home: <https://hootty.dev>.
@@ -91,6 +91,8 @@ hoot run     [--remote <url>] [--state-dir <dir>] [--key <key>] [--attach]
                   [--cwd <path>] [--env NAME[=VALUE]] [--env-file <path>]
                   -- <cmd> [args...]
 hoot list    [--remote <url>] [--state-dir <dir>] [--json] [--all]
+hoot log     [--state-dir <dir>] [--strict]
+                  [--format vt|plain|asciinema] [<id-or-prefix>]
 hoot resolve [--remote <url>] [--state-dir <dir>] <id-or-prefix>
 hoot clone   [--remote <url>] [--state-dir <dir>] [--key <new-key>]
                   [--env NAME[=VALUE]] [--env-file <path>]
@@ -185,10 +187,23 @@ for the lifetime of the managed child. New state files include
 `session.argv` and `session.cwd`; remove old state dirs when upgrading
 across this schema change.
 
-Each session directory also contains `pty.cast`, an asciicast v2 JSONL
-recording with a header line followed by output (`"o"`) and resize
-(`"r"`) events. It is valid input for `asciinema play`, `agg`, and
-`asciinema-player`. Input (`"i"`) events are not recorded.
+Each session directory also contains `pty.hootty.log`, a binary
+`hootty.log v1` frame stream of every byte the child wrote. The file
+opens with an ASCII preamble (`# hootty.log v1\n\n`), a prelude
+`type=2` resize frame at `ts=0` carrying initial cols × rows, then a
+sequence of uniform 5-byte-headered frames (`type` u8 + `ts_delta_ms`
+u16 LE + `length` u16 LE + payload). Frame types: `1` output, `2`
+resize, `3` spacer (u32 ms gap, used to bridge idle periods longer
+than 65 s). Output is batched at ~30 fps buckets (33 ms windows);
+buckets > 64 KiB auto-split into chained frames at delta=0. Input is
+not recorded.
+
+The canonical viewer is `hoot log` — see below. For asciinema interop,
+`hoot log <id> --format asciinema` stream-transcodes the binary log
+into asciicast v2 JSONL on stdout, and the JSONL is valid input for
+`asciinema play -`, `agg`, and `asciinema-player`. Header metadata
+(`timestamp`, `command`, `title`) is read from `state.json`;
+`width`/`height` come from the recording's prelude resize frame.
 
 If `--key` is omitted, `hoot` generates a random short id (3–8
 chars drawn from `0-9a-z` minus `l` and `o`, collision-checked against
@@ -216,6 +231,49 @@ Anywhere a session key is accepted (including `resolve`), you can pass
 either the full id or any unique prefix (minimum 3 characters,
 case-insensitive). Ambiguous prefixes fail with an error listing the
 matching ids; this is what makes the random ids ergonomic to use.
+
+### `hoot log`
+
+`log` views a recorded session's PTY log. The recording lives at
+`<state-dir>/<key>/pty.hootty.log` and is the binary `hootty.log v1`
+frame stream documented above.
+
+```sh
+hoot log abc                              # screen render of the recording (default on tty)
+hoot log abc | less                       # paged plain text (default on pipe)
+hoot log abc | grep -i error              # greppable plain text
+hoot log abc --format vt                  # explicit VT bytes (renders the screen)
+hoot log abc --format asciinema | asciinema play -
+hoot log                                  # interactive picker over local sessions
+```
+
+Formats:
+
+- `vt` — VT byte stream that, written to a terminal, renders the
+  recorded session's final visible state (replay through libghostty's
+  vt formatter, with scrollback).
+- `plain` — plain-text content of the final visible state (codepoints
+  + newlines, no SGR/cursor escapes). Greppable.
+- `asciinema` — asciicast v2 JSONL transcoded from the binary log.
+  Header reads `timestamp`/`command`/`title` from `state.json` and
+  `width`/`height` from the recording's prelude resize.
+
+Default `--format`:
+
+- `vt` if stdout is a terminal — `hoot log abc` shows the rendered
+  final screen.
+- `plain` if stdout is a pipe — `hoot log abc | grep error` works on
+  visible text.
+
+Resolution shares its routing matrix with `hoot attach`: no arg + tty
+drops into an fzf picker; a pattern that doesn't id-prefix-match falls
+back to fzf preseeded with `--query=<arg> --select-1 --exit-0`;
+`--strict` disables the picker entirely. `hoot log` is local-only — no
+`--remote` flag in v1.
+
+Anything we'd otherwise add — case-insensitive grep, regex, byte
+search, time-bounded windows, follow mode, hex output — is just unix
+pipes away. We don't reinvent grep, less, or asciinema.
 
 ### `hoot clone`
 
@@ -534,8 +592,8 @@ repainted on the attaching terminal. The asciicast playback path
 that used to re-stream raw recorded bytes after the snapshot was
 removed: it visibly re-animated past TUI frames (cursor moves,
 alt-screen toggles, in-place updates) on top of an already-correct
-snapshot. The recorder still writes `pty.cast` to disk for offline
-tooling.
+snapshot. The recorder still writes `pty.hootty.log` to disk for
+offline tooling — view it with `hoot log`.
 
 The previous `--no-full-replay` flag and the alternative `pty.log`
 replay arm were also removed. Replaying raw recorded bytes re-issued

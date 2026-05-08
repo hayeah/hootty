@@ -148,7 +148,7 @@ func TestLibghosttyRecorderRoundtrip(t *testing.T) {
 	defer master.Close()
 
 	tmp := t.TempDir()
-	logPath := tmp + "/pty.cast"
+	logPath := tmp + "/pty.hootty.log"
 	rec, err := NewRecorder(logPath, 80, 24)
 	if err != nil {
 		t.Fatalf("NewRecorder: %v", err)
@@ -180,7 +180,7 @@ func TestLibghosttyRecorderRoundtrip(t *testing.T) {
 	}
 	_ = p.Close() // flushes recorder
 
-	events, err := ReadAsciicastOutputEvents(logPath, 0)
+	events, err := ReadOutputEvents(logPath, 0)
 	if err != nil {
 		t.Fatalf("read cast: %v", err)
 	}

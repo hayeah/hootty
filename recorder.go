@@ -1,76 +1,103 @@
 package session
 
 import (
-	"bufio"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	defaultCastWidth  = 80
-	defaultCastHeight = 24
+	defaultRecorderCols = 80
+	defaultRecorderRows = 24
+
+	// FrameMaxPayload is the per-frame payload cap (uint16 length).
+	FrameMaxPayload = 1 << 16
+
+	// frameBucketMs is the recorder batching window. ~30 fps. The
+	// recorder coalesces all output bytes within a bucket into a
+	// single type=1 frame (or chained frames if > 64 KiB).
+	frameBucketMs = 33
+
+	// FrameMagic is the first line of every recording. Readers MUST
+	// reject the file if the magic line doesn't match exactly.
+	FrameMagic = "# hootty.log v1"
+
+	// recorderPreamble is the full preamble written before frames:
+	// magic line + blank line.
+	recorderPreamble = FrameMagic + "\n\n"
 )
 
-// Recorder appends asciicast v2 JSONL events to a file. The point is
-// to keep an authoritative output log of everything the child wrote
-// so asciinema-compatible tools can replay the session.
+// Frame type constants for the binary recording format. The on-disk
+// layout for every frame is uniform:
 //
-// Concurrency: the session's read loop is the only writer; the
-// mutex is defensive against tests that might write from multiple
-// goroutines.
+//	offset  size  field        notes
+//	0       1     type         frame type
+//	1       2     ts_delta_ms  uint16 LE — ms since previous frame
+//	3       2     length       uint16 LE — payload length (max 64 KiB)
+//	5       N     payload      N = length
+//
+// All multi-byte fields are little-endian.
+const (
+	// FrameTypeOutput carries PTY output bytes. Per-frame max 64 KiB;
+	// oversized buckets split into chained frames at ts_delta_ms=0.
+	FrameTypeOutput uint8 = 1
+
+	// FrameTypeResize carries a 4-byte payload: uint16 cols (LE) +
+	// uint16 rows (LE). The recording's first frame MUST be a resize
+	// at ts=0 carrying the initial geometry.
+	FrameTypeResize uint8 = 2
+
+	// FrameTypeSpacer bridges idle gaps that exceed the 65535 ms
+	// range of ts_delta_ms. Payload is 4 bytes — uint32 LE ms — and
+	// the header's ts_delta_ms field is reserved zero.
+	FrameTypeSpacer uint8 = 3
+)
+
+// Recorder appends binary frames to a hootty.log v1 file. The point
+// is to keep an authoritative byte-faithful PTY log for libghostty
+// replay and asciinema export.
+//
+// Concurrency: the dispatcher goroutine in LibghosttyPTY is the only
+// writer in production. The mutex is defensive against tests that
+// might write from multiple goroutines.
 type Recorder struct {
 	mu      sync.Mutex
 	path    string
 	w       io.WriteCloser
 	started time.Time
+
+	// lastEmittedMs is the ms-since-recording-start of the most
+	// recent emitted frame. Used to compute ts_delta_ms (and to
+	// decide whether a spacer is needed).
+	lastEmittedMs uint64
+
+	// pendingBucketMs is the bucket-start time (ms since recording
+	// start) of the in-flight type=1 buffer. Zero means no pending
+	// buffer.
+	pendingBucketMs uint64
+	// pendingHasBucket distinguishes "no pending output" from
+	// "pending output for bucket=0" — the very first output frame's
+	// bucket can legitimately be 0.
+	pendingHasBucket bool
+	pendingBuf       []byte
 }
 
-// RecorderOption configures optional asciicast header metadata.
-type RecorderOption func(*recorderOptions)
-
-type recorderOptions struct {
-	command string
-	title   string
-}
-
-// WithRecorderCommand records the command metadata in the asciicast
-// header.
-func WithRecorderCommand(command string) RecorderOption {
-	return func(o *recorderOptions) { o.command = command }
-}
-
-// WithRecorderTitle records the title metadata in the asciicast
-// header.
-func WithRecorderTitle(title string) RecorderOption {
-	return func(o *recorderOptions) { o.title = title }
-}
-
-type asciicastHeader struct {
-	Version   int    `json:"version"`
-	Width     int    `json:"width"`
-	Height    int    `json:"height"`
-	Timestamp int64  `json:"timestamp"`
-	Command   string `json:"command,omitempty"`
-	Title     string `json:"title,omitempty"`
-}
-
-// NewRecorder opens (or creates+truncates) path and writes an
-// asciicast v2 header line. Subsequent Write calls append output
-// events.
-func NewRecorder(path string, cols, rows uint16, opts ...RecorderOption) (*Recorder, error) {
-	o := recorderOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
+// NewRecorder opens (or creates+truncates) path and writes the
+// hootty.log v1 preamble plus the prelude type=2 resize frame at
+// ts=0. Subsequent Write calls append batched type=1 frames; resize
+// events flush the pending buffer and append type=2 frames.
+func NewRecorder(path string, cols, rows uint16) (*Recorder, error) {
 	if cols == 0 {
-		cols = defaultCastWidth
+		cols = defaultRecorderCols
 	}
 	if rows == 0 {
-		rows = defaultCastHeight
+		rows = defaultRecorderRows
 	}
 
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
@@ -82,48 +109,67 @@ func NewRecorder(path string, cols, rows uint16, opts ...RecorderOption) (*Recor
 		path:    path,
 		started: time.Now(),
 	}
-	header := asciicastHeader{
-		Version:   2,
-		Width:     int(cols),
-		Height:    int(rows),
-		Timestamp: r.started.Unix(),
-		Command:   o.command,
-		Title:     o.title,
+	if _, err := f.Write([]byte(recorderPreamble)); err != nil {
+		_ = f.Close()
+		return nil, err
 	}
-	if err := json.NewEncoder(f).Encode(header); err != nil {
+	// Prelude resize at ts=0 — first-frame resize convention.
+	if err := r.writeResizeFrameLocked(0, cols, rows); err != nil {
 		_ = f.Close()
 		return nil, err
 	}
 	return r, nil
 }
 
-// Write appends data as an asciicast output event. Returns len(data)
-// on success so Recorder still satisfies io.Writer.
+// Write appends data to the current bucket's output buffer and
+// flushes one or more type=1 frames on bucket transition. Returns
+// len(data) on success so Recorder still satisfies io.Writer.
 func (r *Recorder) Write(data []byte) (int, error) {
 	if r == nil || r.w == nil {
 		return len(data), nil
 	}
+	if len(data) == 0 {
+		return 0, nil
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := r.writeEventLocked("o", string(data)); err != nil {
-		return 0, err
+	now := r.nowMsLocked()
+	bucket := (now / frameBucketMs) * frameBucketMs
+
+	if r.pendingHasBucket && bucket != r.pendingBucketMs {
+		if err := r.flushPendingLocked(); err != nil {
+			return 0, err
+		}
 	}
+	if !r.pendingHasBucket {
+		r.pendingBucketMs = bucket
+		r.pendingHasBucket = true
+	}
+	r.pendingBuf = append(r.pendingBuf, data...)
 	return len(data), nil
 }
 
-// RecordResize appends an asciicast resize event.
+// RecordResize flushes any pending output buffer (preserving the
+// witnessed output→resize order), then writes a type=2 resize frame.
 func (r *Recorder) RecordResize(cols, rows uint16) error {
 	if r == nil || r.w == nil {
 		return nil
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.writeEventLocked("r", fmt.Sprintf("%dx%d", cols, rows))
-}
-
-func (r *Recorder) writeEventLocked(kind, data string) error {
-	event := []any{time.Since(r.started).Seconds(), kind, data}
-	return json.NewEncoder(r.w).Encode(event)
+	if err := r.flushPendingLocked(); err != nil {
+		return err
+	}
+	now := r.nowMsLocked()
+	if err := r.bridgeIdleLocked(now); err != nil {
+		return err
+	}
+	delta := now - r.lastEmittedMs
+	if err := r.writeResizeFrameLocked(uint16(delta), cols, rows); err != nil {
+		return err
+	}
+	r.lastEmittedMs = now
+	return nil
 }
 
 // Path returns the on-disk path of the recording.
@@ -134,8 +180,8 @@ func (r *Recorder) Path() string {
 	return r.path
 }
 
-// Close flushes and closes the underlying file. Safe to call
-// multiple times.
+// Close flushes any pending output buffer and closes the underlying
+// file. Safe to call multiple times.
 func (r *Recorder) Close() error {
 	if r == nil {
 		return nil
@@ -145,23 +191,272 @@ func (r *Recorder) Close() error {
 	if r.w == nil {
 		return nil
 	}
-	err := r.w.Close()
+	flushErr := r.flushPendingLocked()
+	closeErr := r.w.Close()
 	r.w = nil
-	return err
+	if flushErr != nil {
+		return flushErr
+	}
+	return closeErr
 }
 
-// AsciicastOutputEvent is one output event selected for attach
-// playback.
+func (r *Recorder) nowMsLocked() uint64 {
+	return uint64(time.Since(r.started).Milliseconds())
+}
+
+// bridgeIdleLocked emits a single type=3 spacer frame if the gap
+// from lastEmittedMs to now exceeds 65535 ms. After emit,
+// lastEmittedMs is advanced so that the next frame's ts_delta_ms
+// fits in uint16. Idles longer than ~49.7 days chain multiple
+// spacers.
+func (r *Recorder) bridgeIdleLocked(nowMs uint64) error {
+	for nowMs-r.lastEmittedMs > 65535 {
+		gap := nowMs - r.lastEmittedMs
+		var advance uint32
+		if gap > uint64(^uint32(0)) {
+			advance = ^uint32(0)
+		} else {
+			advance = uint32(gap)
+		}
+		var hdr [5]byte
+		hdr[0] = FrameTypeSpacer
+		// ts_delta_ms reserved zero on spacer frames.
+		binary.LittleEndian.PutUint16(hdr[3:5], 4)
+		var payload [4]byte
+		binary.LittleEndian.PutUint32(payload[:], advance)
+		if _, err := r.w.Write(hdr[:]); err != nil {
+			return err
+		}
+		if _, err := r.w.Write(payload[:]); err != nil {
+			return err
+		}
+		r.lastEmittedMs += uint64(advance)
+	}
+	return nil
+}
+
+// flushPendingLocked drains pendingBuf into one or more type=1
+// frames at pendingBucketMs. Writes a type=3 spacer prelude if the
+// gap to the bucket exceeds 65535 ms. No-op if no pending output.
+func (r *Recorder) flushPendingLocked() error {
+	if !r.pendingHasBucket {
+		return nil
+	}
+	bucket := r.pendingBucketMs
+	buf := r.pendingBuf
+	r.pendingBucketMs = 0
+	r.pendingHasBucket = false
+	r.pendingBuf = nil
+
+	if err := r.bridgeIdleLocked(bucket); err != nil {
+		return err
+	}
+	delta := uint16(bucket - r.lastEmittedMs)
+	first := true
+	for {
+		chunkLen := len(buf)
+		if chunkLen > FrameMaxPayload-1 {
+			// Cap one frame at uint16-max bytes — uint16 length
+			// holds 0..65535, so the largest single payload is
+			// 65535. Keep one byte under FrameMaxPayload (which is
+			// 65536) so length always fits.
+			chunkLen = FrameMaxPayload - 1
+		}
+		var hdr [5]byte
+		hdr[0] = FrameTypeOutput
+		var thisDelta uint16
+		if first {
+			thisDelta = delta
+		}
+		binary.LittleEndian.PutUint16(hdr[1:3], thisDelta)
+		binary.LittleEndian.PutUint16(hdr[3:5], uint16(chunkLen))
+		if _, err := r.w.Write(hdr[:]); err != nil {
+			return err
+		}
+		if chunkLen > 0 {
+			if _, err := r.w.Write(buf[:chunkLen]); err != nil {
+				return err
+			}
+		}
+		buf = buf[chunkLen:]
+		first = false
+		if len(buf) == 0 {
+			break
+		}
+	}
+	r.lastEmittedMs = bucket
+	return nil
+}
+
+// writeResizeFrameLocked emits a type=2 frame with the given delta
+// and a 4-byte cols+rows payload. Caller is responsible for
+// updating lastEmittedMs if needed (the prelude frame at ts=0 sets
+// lastEmittedMs=0 implicitly via Recorder construction).
+func (r *Recorder) writeResizeFrameLocked(deltaMs, cols, rows uint16) error {
+	var hdr [5]byte
+	hdr[0] = FrameTypeResize
+	binary.LittleEndian.PutUint16(hdr[1:3], deltaMs)
+	binary.LittleEndian.PutUint16(hdr[3:5], 4)
+	var payload [4]byte
+	binary.LittleEndian.PutUint16(payload[0:2], cols)
+	binary.LittleEndian.PutUint16(payload[2:4], rows)
+	if _, err := r.w.Write(hdr[:]); err != nil {
+		return err
+	}
+	if _, err := r.w.Write(payload[:]); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Frame is one decoded record from a hootty.log v1 file.
+type Frame struct {
+	// Type is one of FrameTypeOutput, FrameTypeResize, FrameTypeSpacer.
+	// Unknown types are returned as-is so callers can skip them.
+	Type uint8
+
+	// At is the absolute time since recording start, accumulated by
+	// the decoder from per-frame deltas (and any spacer payloads).
+	At time.Duration
+
+	// Payload is the raw payload bytes. For FrameTypeResize this is
+	// exactly 4 bytes (cols/rows); for FrameTypeSpacer it is exactly
+	// 4 bytes (u32 ms). For FrameTypeOutput it's the chunk bytes.
+	Payload []byte
+}
+
+// FrameDecoder iterates over a hootty.log v1 file. Calling Next
+// returns the next decoded frame or io.EOF. Truncated trailing
+// frames are silently treated as EOF (recorder may have been killed
+// mid-frame).
+type FrameDecoder struct {
+	r              io.Reader
+	preambleParsed bool
+	cumMs          uint64
+	hdr            [5]byte
+	scratch        []byte
+}
+
+// NewFrameDecoder wraps r. It parses the ASCII preamble lazily on
+// the first Next call.
+func NewFrameDecoder(r io.Reader) *FrameDecoder {
+	return &FrameDecoder{r: r}
+}
+
+// ErrBadMagic is returned by FrameDecoder.Next if the file's first
+// line isn't the expected magic header.
+var ErrBadMagic = errors.New("hootty.log: bad or missing magic line")
+
+// Next returns the next frame. Returns io.EOF when the file is
+// exhausted (or when a partial trailing frame is encountered).
+func (d *FrameDecoder) Next() (Frame, error) {
+	if !d.preambleParsed {
+		if err := d.parsePreamble(); err != nil {
+			return Frame{}, err
+		}
+		d.preambleParsed = true
+	}
+	// Read the 5-byte header; treat short read as EOF.
+	if _, err := io.ReadFull(d.r, d.hdr[:]); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return Frame{}, io.EOF
+		}
+		return Frame{}, err
+	}
+	t := d.hdr[0]
+	delta := binary.LittleEndian.Uint16(d.hdr[1:3])
+	length := binary.LittleEndian.Uint16(d.hdr[3:5])
+
+	if cap(d.scratch) < int(length) {
+		d.scratch = make([]byte, length)
+	} else {
+		d.scratch = d.scratch[:length]
+	}
+	if length > 0 {
+		if _, err := io.ReadFull(d.r, d.scratch); err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				return Frame{}, io.EOF
+			}
+			return Frame{}, err
+		}
+	}
+
+	switch t {
+	case FrameTypeSpacer:
+		// Header delta MUST be zero on spacer frames; tolerate
+		// non-zero per spec (readers ignore rather than fail).
+		if length != 4 {
+			return Frame{}, fmt.Errorf("hootty.log: spacer length=%d, want 4", length)
+		}
+		advance := binary.LittleEndian.Uint32(d.scratch[:4])
+		d.cumMs += uint64(advance)
+		// Spacers carry no replayable data; skip and recurse.
+		return d.Next()
+	default:
+		d.cumMs += uint64(delta)
+	}
+	out := make([]byte, length)
+	copy(out, d.scratch)
+	return Frame{
+		Type:    t,
+		At:      time.Duration(d.cumMs) * time.Millisecond,
+		Payload: out,
+	}, nil
+}
+
+func (d *FrameDecoder) parsePreamble() error {
+	// Read up to ~256 bytes looking for the first blank-line
+	// boundary. The preamble is "# hootty.log v1\n\n" plus
+	// optional future "# key=value" comment lines.
+	var buf []byte
+	tmp := make([]byte, 1)
+	for {
+		if len(buf) > 4096 {
+			return ErrBadMagic
+		}
+		n, err := d.r.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[0])
+			// Detect blank-line terminator: "\n\n".
+			if len(buf) >= 2 && buf[len(buf)-1] == '\n' && buf[len(buf)-2] == '\n' {
+				break
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return ErrBadMagic
+			}
+			return err
+		}
+	}
+	// Validate magic: first line must equal FrameMagic.
+	for i, b := range []byte(FrameMagic) {
+		if i >= len(buf) || buf[i] != b {
+			return ErrBadMagic
+		}
+	}
+	if len(buf) <= len(FrameMagic) || buf[len(FrameMagic)] != '\n' {
+		return ErrBadMagic
+	}
+	return nil
+}
+
+// AsciicastOutputEvent is one output event reconstructed from the
+// binary log. Used by tests that want to inspect the recorded byte
+// stream as discrete (timestamp, payload) events. Production replay
+// goes through FrameDecoder + libghostty.
 type AsciicastOutputEvent struct {
 	At   time.Duration
 	Data []byte
 }
 
-// ReadAsciicastOutputEvents reads output events from path. If window
-// is positive, only events from the final window duration are returned.
-// Resize and input events are intentionally ignored for attach
-// playback.
-func ReadAsciicastOutputEvents(path string, window time.Duration) ([]AsciicastOutputEvent, error) {
+// ReadOutputEvents reads all type=1 (output) frames from path. If
+// window is positive, only events from the final window duration
+// are returned. Resize events are intentionally ignored.
+//
+// Kept as a thin helper on top of FrameDecoder for test
+// convenience. Production replay uses FrameDecoder directly.
+func ReadOutputEvents(path string, window time.Duration) ([]AsciicastOutputEvent, error) {
 	if path == "" {
 		return nil, nil
 	}
@@ -174,48 +469,27 @@ func ReadAsciicastOutputEvents(path string, window time.Duration) ([]AsciicastOu
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	if !scanner.Scan() {
-		return nil, scanner.Err()
-	}
-
+	dec := NewFrameDecoder(f)
 	var events []AsciicastOutputEvent
 	var last time.Duration
-	for scanner.Scan() {
-		var raw []json.RawMessage
-		if err := json.Unmarshal(scanner.Bytes(), &raw); err != nil {
+	for {
+		fr, err := dec.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
 			return nil, err
 		}
-		if len(raw) < 3 {
+		if fr.At > last {
+			last = fr.At
+		}
+		if fr.Type != FrameTypeOutput {
 			continue
-		}
-		var seconds float64
-		var kind string
-		if err := json.Unmarshal(raw[0], &seconds); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(raw[1], &kind); err != nil {
-			return nil, err
-		}
-		at := time.Duration(seconds * float64(time.Second))
-		if at > last {
-			last = at
-		}
-		if kind != "o" {
-			continue
-		}
-		var data string
-		if err := json.Unmarshal(raw[2], &data); err != nil {
-			return nil, err
 		}
 		events = append(events, AsciicastOutputEvent{
-			At:   at,
-			Data: []byte(data),
+			At:   fr.At,
+			Data: fr.Payload,
 		})
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
 	}
 	if window <= 0 || len(events) == 0 {
 		return events, nil
@@ -229,4 +503,128 @@ func ReadAsciicastOutputEvents(path string, window time.Duration) ([]AsciicastOu
 		i++
 	}
 	return events[i:], nil
+}
+
+// AsciicastHeader is the v2 header line emitted by
+// WriteAsciicastJSONL. Optional fields (Command, Title, Timestamp)
+// are populated by callers from state.json.
+type AsciicastHeader struct {
+	Version   int    `json:"version"`
+	Width     int    `json:"width"`
+	Height    int    `json:"height"`
+	Timestamp int64  `json:"timestamp,omitempty"`
+	Command   string `json:"command,omitempty"`
+	Title     string `json:"title,omitempty"`
+}
+
+// WriteAsciicastJSONL transcodes a hootty.log v1 stream from in
+// into asciicast v2 JSONL on out. The first frame (prelude resize)
+// drives the header's width/height. Subsequent frames emit:
+//
+//   - type=1 (output)  → [seconds, "o", payload]
+//   - type=2 (resize)  → [seconds, "r", "COLSxROWS"]
+//   - type=3 (spacer)  → no event (FrameDecoder skips it; the next
+//     frame's At reflects the gap)
+//
+// header.Timestamp / Command / Title pass through verbatim. Width
+// and Height are overwritten from the prelude frame; callers should
+// leave them as zero in the input header.
+func WriteAsciicastJSONL(in io.Reader, out io.Writer, header AsciicastHeader) error {
+	dec := NewFrameDecoder(in)
+	first, err := dec.Next()
+	if err != nil {
+		return fmt.Errorf("asciicast: read prelude: %w", err)
+	}
+	if first.Type != FrameTypeResize || len(first.payloadOrEmpty()) != 4 {
+		return fmt.Errorf("asciicast: first frame is not a resize (got type=%d, len=%d)", first.Type, len(first.Payload))
+	}
+	cols := binary.LittleEndian.Uint16(first.Payload[0:2])
+	rows := binary.LittleEndian.Uint16(first.Payload[2:4])
+	if header.Version == 0 {
+		header.Version = 2
+	}
+	header.Width = int(cols)
+	header.Height = int(rows)
+
+	enc := json.NewEncoder(out)
+	if err := enc.Encode(header); err != nil {
+		return fmt.Errorf("asciicast: write header: %w", err)
+	}
+	for {
+		fr, err := dec.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("asciicast: read frame: %w", err)
+		}
+		seconds := fr.At.Seconds()
+		switch fr.Type {
+		case FrameTypeOutput:
+			if err := enc.Encode([]any{seconds, "o", string(fr.Payload)}); err != nil {
+				return err
+			}
+		case FrameTypeResize:
+			if len(fr.Payload) != 4 {
+				return fmt.Errorf("asciicast: resize payload len=%d, want 4", len(fr.Payload))
+			}
+			c := binary.LittleEndian.Uint16(fr.Payload[0:2])
+			r := binary.LittleEndian.Uint16(fr.Payload[2:4])
+			geom := fmt.Sprintf("%dx%d", c, r)
+			if err := enc.Encode([]any{seconds, "r", geom}); err != nil {
+				return err
+			}
+		default:
+			// Unknown future types are skipped (forward-compat).
+		}
+	}
+}
+
+// payloadOrEmpty is a tiny helper used inside WriteAsciicastJSONL's
+// preamble guard so a nil Payload doesn't panic on len().
+func (f Frame) payloadOrEmpty() []byte {
+	if f.Payload == nil {
+		return nil
+	}
+	return f.Payload
+}
+
+// LoadStateFile reads <stateDir>/<key>/state.json from disk. Used
+// by `hoot log --format asciinema` to populate header metadata
+// (timestamp/command/title). Returns nil, nil on a missing file so
+// callers can downgrade to a default header instead of failing.
+func LoadStateFile(path string) (*StateFile, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var st StateFile
+	if err := json.Unmarshal(data, &st); err != nil {
+		return nil, fmt.Errorf("state.json: %w", err)
+	}
+	return &st, nil
+}
+
+// AsciicastHeaderFromState builds an AsciicastHeader populated from
+// state.json. Width/Height are stubbed to zero and overwritten by
+// WriteAsciicastJSONL from the recording's prelude frame; this
+// function only fills in the metadata columns.
+func AsciicastHeaderFromState(st *StateFile) AsciicastHeader {
+	h := AsciicastHeader{Version: 2}
+	if st == nil {
+		return h
+	}
+	if !st.Session.CreatedAt.IsZero() {
+		h.Timestamp = st.Session.CreatedAt.Unix()
+	}
+	if len(st.Session.Argv) > 0 {
+		h.Command = strings.Join(st.Session.Argv, " ")
+	}
+	if st.Session.Key != "" {
+		h.Title = st.Session.Key
+	}
+	return h
 }
