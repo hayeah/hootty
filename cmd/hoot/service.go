@@ -85,7 +85,7 @@ func (s *RunCmdService) Run(ctx context.Context, super session.Session) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = sanitizeChildEnv(os.Environ())
+	cmd.Env = sanitizeChildEnv(os.Environ(), s.Key)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid:  true,
 		Setctty: true,
@@ -229,7 +229,12 @@ func (s *RunCmdService) handleClone(w http.ResponseWriter, r *http.Request) {
 // outer multiplexer / different emulator. (See dotfiles' ptydemo
 // for the original motivation: powerlevel10k probes $TMUX and
 // emits tmux-native title escapes that libghostty doesn't parse.)
-func sanitizeChildEnv(parent []string) []string {
+//
+// sessionKey, if non-empty, is published as $HOOT_SESSION so nested
+// hoot invocations from inside this child can detect they're already
+// in a hoot session and refuse to take over the terminal a second
+// time. Mirrors tmux's $TMUX convention.
+func sanitizeChildEnv(parent []string, sessionKey string) []string {
 	const childTerm = "xterm-256color"
 	// TMUX / TMUX_PANE: powerlevel10k checks these to decide it's
 	// nested inside tmux and emits tmux-private title escapes
@@ -237,12 +242,15 @@ func sanitizeChildEnv(parent []string) []string {
 	// as literal text. Strip them so p10k stays in xterm mode.
 	// TERM: dropped so we can force xterm-256color below; otherwise
 	// a parent TERM=tmux-256color would have the same effect on p10k.
+	// HOOT_SESSION: dropped here so the inner-most session's key wins
+	// if hoot ever ends up nested anyway (override via unset).
 	drop := map[string]bool{
-		"TMUX":      true,
-		"TMUX_PANE": true,
-		"TERM":      true,
+		"TMUX":         true,
+		"TMUX_PANE":    true,
+		"TERM":         true,
+		hootSessionEnv: true,
 	}
-	out := make([]string, 0, len(parent)+1)
+	out := make([]string, 0, len(parent)+2)
 	for _, kv := range parent {
 		eq := strings.IndexByte(kv, '=')
 		if eq < 0 {
@@ -255,5 +263,8 @@ func sanitizeChildEnv(parent []string) []string {
 		out = append(out, kv)
 	}
 	out = append(out, "TERM="+childTerm)
+	if sessionKey != "" {
+		out = append(out, hootSessionEnv+"="+sessionKey)
+	}
 	return out
 }
