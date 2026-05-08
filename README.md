@@ -91,7 +91,7 @@ hoot run     [--remote <url>] [--state-dir <dir>] [--key <key>] [--attach]
                   [--cwd <path>] [--env NAME[=VALUE]] [--env-file <path>]
                   -- <cmd> [args...]
 hoot list    [--remote <url>] [--state-dir <dir>] [--json] [--all]
-hoot log     [--state-dir <dir>] [--strict]
+hoot log     [--state-dir <dir>] [--strict] [--all]
                   [--format vt|plain|asciinema] [<id-or-prefix>]
 hoot resolve [--remote <url>] [--state-dir <dir>] <id-or-prefix>
 hoot clone   [--remote <url>] [--state-dir <dir>] [--key <new-key>]
@@ -177,7 +177,11 @@ required.
 `hoot list` prints one human-readable line per **live** session by
 default — the same line shape the fzf picker matches against, so
 pattern intuition is shared across `hoot ls`, `hoot attach <pat>`,
-`hoot kill <pat>`, etc.:
+`hoot kill <pat>`, etc. The fzf picker (and the id-prefix fuzzy
+fallback) shows live sessions only across all picker-driven verbs
+(`attach`, `clone`, `detach`, `kill`, `log`); `hoot log --all`
+opts back in for dead-session log replay, and `--strict <id>` still
+resolves any on-disk key regardless of liveness.
 
 ```
 [<id>]	@<host>	<cwd>	<argv...>	[*attached|(dead)]
@@ -285,8 +289,12 @@ Default `--format`:
 Resolution shares its routing matrix with `hoot attach`: no arg + tty
 drops into an fzf picker; a pattern that doesn't id-prefix-match falls
 back to fzf preseeded with `--query=<arg> --select-1 --exit-0`;
-`--strict` disables the picker entirely. `hoot log` is local-only — no
-`--remote` flag in v1.
+`--strict` disables the picker entirely. The picker (and the
+id-prefix fast path) shows live sessions only by default; pass
+`--all` to include exited sessions whose recordings are still on
+disk. `--strict` always resolves against the full on-disk store, so
+`hoot log --strict <dead-id>` keeps working without `--all`. `hoot
+log` is local-only — no `--remote` flag in v1.
 
 Anything we'd otherwise add — case-insensitive grep, regex, byte
 search, time-bounded windows, follow mode, hex output — is just unix
