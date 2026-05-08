@@ -83,7 +83,9 @@ Plus the always-present library routes:
 
 ```sh
 hoot run     [--remote <url>] [--state-dir <dir>] [--key <key>] [--attach]
-                  [--no-reconnect] [--prefix-key <key>] -- <cmd> [args...]
+                  [--no-reconnect] [--prefix-key <key>]
+                  [--cwd <path>] [--env NAME[=VALUE]] [--env-file <path>]
+                  -- <cmd> [args...]
 hoot list    [--remote <url>] [--state-dir <dir>]
 hoot resolve [--remote <url>] [--state-dir <dir>] <id-or-prefix>
 hoot clone   [--remote <url>] [--state-dir <dir>] [--key <new-key>]
@@ -141,6 +143,15 @@ recording with a header line followed by output (`"o"`) and resize
 If `--key` is omitted, `hoot` generates a random short id (3–8
 chars drawn from `0-9a-z` minus `l` and `o`, collision-checked against
 existing sessions). The chosen key is printed on stdout.
+
+`--cwd <path>` overrides the working directory for the spawned command;
+relative paths are resolved against the caller's cwd (or the server's
+cwd, for `--remote`). `--env NAME=VALUE` sets a one-shot override;
+`--env NAME` copies `NAME` from the calling process's environment;
+`--env-file <path>` loads simple `NAME=VALUE` lines (`#` comments and
+blank lines ignored). Both `--env` and `--env-file` are repeatable; they
+match `hoot clone`'s flag shape so a clone can be reproduced as a fresh
+`run` with the same overrides.
 
 Pass `--attach` to `run` to attach the current terminal to the new
 session immediately after spawn readiness. Detaching with

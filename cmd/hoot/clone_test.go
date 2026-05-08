@@ -126,7 +126,7 @@ while [ "$#" -gt 0 ]; do
 done
 mkdir -p "$state_dir/$key"
 cat > "$state_dir/$key/state.json" <<EOF
-{"session":{"key":"$key","argv":["$1","$2"],"cwd":"$cwd"},"state":{"clone_var":"${CLONE_VAR:-}"}}
+{"session":{"key":"$key","argv":["$1","$2"],"cwd":"$cwd"},"state":{"clone_var":"${CLONE_VAR:-}","run_file_var":"${RUN_FILE_VAR:-}"}}
 EOF
 : > "$state_dir/$key/rpc.sock"
 `
