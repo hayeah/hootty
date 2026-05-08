@@ -69,7 +69,7 @@ func TestHootRestorer_E2EClearsCatalogueModes(t *testing.T) {
 		done <- runSession(ctx, conn, 80, 24, shared, attachLabel{Session: "e2e", Host: "local"}, &attached, attachWriters{
 			stdout: local,
 			stderr: io.Discard,
-		}, restorer)
+		}, restorer, newHUDState(""))
 	}()
 
 	// Wait for attach + snapshot to land.

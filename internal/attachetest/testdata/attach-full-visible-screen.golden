@@ -1,6 +1,14 @@
 cols=40 rows=8
 cursor=2,10 visible=true active=primary sgr=default
 formatVT:
+prelude-01
+prelude-02
+prelude-03
+prelude-04
+prelude-05
+
+
+<ESC>[0m<ESC>[2m[connected. full @ local]<ESC>[0m
 FULL-01 11111111111111111111111111111111
 FULL-0<ESC>[0m<ESC>[1mCUR<ESC>[0m2222222222222222222222222222222
 FULL-03 33333333333333333333333333333333

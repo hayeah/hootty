@@ -127,7 +127,7 @@ func startAttach(t *testing.T, remote *attachetest.Remote, local *attachetest.Lo
 		done <- runSession(ctx, conn, cols, rows, shared, attachLabel{Session: session, Host: "local"}, &attached, attachWriters{
 			stdout: local,
 			stderr: io.Discard,
-		}, restorer)
+		}, restorer, newHUDState(""))
 	}()
 	deadline := time.Now().Add(2 * time.Second)
 	for !attached.Load() {
@@ -195,7 +195,7 @@ func TestRunSessionHeartbeatClosesIdleConnection(t *testing.T) {
 	err := runSession(ctx, clientConn, 80, 24, shared, attachLabel{Session: "idle", Host: "test"}, &attached, attachWriters{
 		stdout: io.Discard,
 		stderr: io.Discard,
-	}, &hootRestorer{})
+	}, &hootRestorer{}, newHUDState(""))
 	if err == nil {
 		t.Fatalf("runSession err = nil, want idle connection error")
 	}

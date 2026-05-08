@@ -1,5 +1,13 @@
 cols=40 rows=8
 cursor=2,6 visible=true active=primary sgr=default
 formatVT:
+
+
+
+
+
+
+
+<ESC>[0m<ESC>[2m[connected. empty @ local]<ESC>[0m
 fresh-visible
 <ESC>[0m<ESC>[38;5;2mready<ESC>[0m<ESC>[0m<ESC>[2;6H

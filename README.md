@@ -562,14 +562,26 @@ collide with tmux's `C-b`). Override via `--prefix-key C-a`,
 | `<prefix> ^`          | send literal prefix byte to remote                |
 | `<prefix> Ctrl-Z`     | suspend `hoot attach` (SIGTSTP; `fg` resumes) |
 | `<prefix> c`          | clone current session and attach to the clone     |
-| `<prefix> ?`          | print the session HUD line + chord help on stdout |
 
-#### Session HUD (terminal title + `<prefix> ?`)
+#### Session HUD (terminal title + scrollback status line)
 
-When `hoot attach` connects, it sets the terminal window title to a
-one-line summary of the session and saves the prior title via the
-xterm title stack so it can be restored on detach. The format is the
-same string the `<prefix> ?` chord prints into the terminal:
+When `hoot attach` connects, it does two things to remind you which
+session you're in:
+
+1. **Terminal title** — sets the window title to a one-line summary
+   of the session and saves the prior title via the xterm title stack
+   so it can be restored on detach. The title is set once at
+   attach-start and not refreshed mid-session.
+2. **Scrollback status line** — prints the same one-line summary as
+   ordinary terminal output between the scrollback replay and the
+   visible-screen snapshot, then scrolls the visible viewport into
+   the local terminal's scrollback ring. The line lands as the
+   bottom-most scrollback entry, so a single scroll-up after attach
+   shows you the session info. There is no live overlay and nothing
+   redraws on top of the inner program — TUIs (vim, claude code,
+   tmux, …) get a clean viewport.
+
+Both surfaces use the same string:
 
 ```
 🦉 <id> [@host] <cwd> [<cmd...>]
@@ -580,9 +592,9 @@ the joined argv is truncated at 60 runes with a trailing `…`. Example:
 
 ```sh
 $ hoot attach a3f                # title becomes: 🦉 a3fxxx ~/proj/api bash --login
-# (inside the session, after Ctrl-^ ?)
-🦉 a3fxxx ~/proj/api bash --login
-[hoot] commands: "." detach · "^" literal prefix · "Ctrl-Z" suspend · "c" clone · "?" help
+                                  # scroll up one line in the local terminal
+                                  # to see the same string as a dim-styled
+                                  # scrollback entry.
 ```
 
 Mechanism: title push/set on attach uses xterm window-manipulation
@@ -593,16 +605,25 @@ Ghostty, kitty, Wezterm, and Alacritty all implement the title
 stack; on a terminal that doesn't, the sequences parse-and-drop and
 the user's shell reasserts the title on next prompt redraw.
 
-The title is set once at attach-start and not refreshed mid-session
-— inner TUIs (vim, claude code, tmux, …) commonly set their own
-title and we don't fight that. The `<prefix> ?` chord is the
-escape hatch when you need a reminder of which session you're in;
-it prints the HUD line and the chord vocabulary onto the local
-terminal (stdout, dim SGR, leading + trailing CRLF) without
-disturbing the inner program's cursor more than necessary.
+The scrollback line uses `CSI <rows> ; 1 H` to position at the
+bottom of the viewport, `CSI 2 K` to clear that row, prints the dim
+HUD bytes, then `CSI <rows> S` to scroll the entire viewport into
+the local terminal's scrollback ring (in viewport order, so the HUD
+line ends as the newest scrollback entry). Modern xterm, iTerm2,
+Ghostty, kitty, Wezterm and Alacritty all push CSI-S-displaced rows
+into scrollback. On a hypothetical terminal that doesn't, the HUD
+line simply will not appear in scrollback; the viewport still paints
+correctly because the snapshot is a full repaint.
 
-Title emission is gated on stdout being a tty, so scripted attaches
-(e.g. piped output) don't see stray control bytes.
+Inner TUIs that set their own title will override hoot's. The
+scrollback line is one-shot — it prints once at attach time, never
+on a chord, and is never redrawn — so it doesn't fight TUI redraws.
+
+Title-stack push/set/pop is gated on stdout being a tty, so scripted
+attaches (e.g. piped output) don't see stray title control bytes;
+the scrollback status line is emitted unconditionally because it
+flows in the same byte stream as the live PTY chunks the user is
+already consuming.
 
 Exit codes: `0` clean detach, `1` protocol/dial error, `2` argument
 error (or `404`/`409` from a remote `attach-raw`), `130` terminated by

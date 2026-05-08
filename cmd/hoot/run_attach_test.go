@@ -21,7 +21,8 @@ func TestCmdRunRemoteAttachSpawnsThenAttaches(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/sessions":
 			// `hoot run --attach` loads the session list to render
-			// the HUD line for terminal title + `<prefix> ?` chord.
+			// the HUD line for the terminal title + the one-shot
+			// scrollback status line emitted at attach time.
 			// Returning the freshly-created session keeps the HUD
 			// path realistic; an empty list would also work
 			// (loadHUDLine tolerates misses), but populating it
@@ -131,11 +132,33 @@ func TestCmdRunRemoteAttachSpawnsThenAttaches(t *testing.T) {
 	if !sawAttach {
 		t.Fatalf("GET /sessions/abc123/attach-raw was not called")
 	}
-	if !strings.Contains(out, "[connected. abc123 @ http://"+server.Listener.Addr().String()+"]") {
-		t.Fatalf("stdout missing connect banner: %q", out)
+	// At attach time the client emits, in order:
+	//
+	//   - the HUD status line wrapped in dim SGR + CRLF (this is what the
+	//     user sees by scrolling up one row after attach)
+	//   - `\x1b[<rows>S\x1b[H` to push the visible viewport (HUD line +
+	//     scrollback tail) into the local terminal's scrollback ring and
+	//     home the cursor
+	//   - the snapshot payload itself
+	//
+	// Asserting the dim SGR + scroll-up sequence + snapshot payload all
+	// appear in order locks down the new "in-scrollback" placement and
+	// guards against a regression that emits a live overlay or drops the
+	// scroll-up CSI.
+	idxHUD := strings.Index(out, "\x1b[2m🦉 abc123")
+	if idxHUD < 0 {
+		t.Fatalf("stdout missing dim-wrapped HUD status line: %q", out)
 	}
-	if !strings.Contains(out, "remote-ready") {
-		t.Fatalf("stdout missing attached snapshot: %q", out)
+	idxScroll := strings.Index(out, "\x1b[24S\x1b[H")
+	if idxScroll < 0 {
+		t.Fatalf("stdout missing CSI <rows> S + CSI H scroll-into-scrollback sequence: %q", out)
+	}
+	idxSnap := strings.Index(out, "remote-ready")
+	if idxSnap < 0 {
+		t.Fatalf("stdout missing attached snapshot payload: %q", out)
+	}
+	if !(idxHUD < idxScroll && idxScroll < idxSnap) {
+		t.Fatalf("stdout has wrong status-line ordering: HUD=%d scroll=%d snap=%d in %q", idxHUD, idxScroll, idxSnap, out)
 	}
 
 	select {
