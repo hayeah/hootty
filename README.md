@@ -82,6 +82,10 @@ Plus the always-present library routes:
 ## `hoot` CLI
 
 ```sh
+hoot                                 # spawn local default shell, attach
+hoot @<host>                         # spawn shell on remote (ssh://<host>), attach
+hoot <host>                          # same as @<host> (subcommand fallthrough)
+
 hoot run     [--remote <url>] [--state-dir <dir>] [--key <key>] [--attach]
                   [--no-reconnect] [--prefix-key <key>]
                   [--cwd <path>] [--env NAME[=VALUE]] [--env-file <path>]
@@ -99,6 +103,33 @@ hoot write   [--remote <url>] [--state-dir <dir>] [--paste] [--input-file FILE]
                   <id-or-prefix> [DATA...]
 hoot serve   [--state-dir <dir>] --bind <host:port|unix:/path.sock> [--prefix /api]
 ```
+
+### Quick shell
+
+`hoot` with no arguments spawns the user's default shell (resolved
+via `$SHELL`, falling back to `/bin/sh`) and attaches immediately.
+It's the bare-hands form for "open me a session here":
+
+```sh
+hoot                              # local zsh/bash/whatever, attached
+hoot @m4mini                      # ssh://m4mini, remote shell, attached
+hoot me@m4mini:2222               # user@host:port also works as @host
+hoot m4mini                       # subcommand fallthrough — same as @m4mini
+hoot @m4mini --no-reconnect       # flags pass through after the host
+```
+
+`@<host>` is sugar for `--remote ssh://<host>`. The fallthrough form
+(`hoot m4mini`) only triggers when the first positional argument
+isn't a known subcommand — `hoot list`, `hoot run …`, etc. keep their
+existing meanings. For remote shells the empty argv is sent across
+the wire and the remote `hoot serve` resolves its own `$SHELL`, so
+`hoot @m4mini` opens whatever the remote user's login shell is, not
+the caller's.
+
+The shell is invoked bare (no `-l`, no `-i`) — bash and zsh
+auto-promote to interactive on a tty, and skipping `-l` avoids
+re-running profile files that the parent already loaded. Use
+`hoot run -- bash -l` if you need a true login shell.
 
 `--state-dir` defaults to `~/.hoot` for every subcommand.
 

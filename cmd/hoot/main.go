@@ -13,39 +13,65 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 )
 
+// knownSubcommands is the closed set of dispatchable verbs. The
+// top-level dispatch in main consults this to decide whether
+// `hoot foo ...` is a real verb or should fall through to cmdShell
+// as `hoot @foo ...`.
+var knownSubcommands = map[string]bool{
+	"run":       true,
+	"list":      true,
+	"ls":        true,
+	"resolve":   true,
+	"attach":    true,
+	"clone":     true,
+	"kill":      true,
+	"detach":    true,
+	"write":     true,
+	"serve":     true,
+	"__session": true,
+	"-h":        true,
+	"--help":    true,
+	"help":      true,
+}
+
 func main() {
-	if len(os.Args) < 2 {
+	args := os.Args[1:]
+
+	cmd, shellArgs, ok := dispatchTopLevel(args)
+	if !ok {
+		// dispatchTopLevel signaled an unknown-flag-only usage error.
 		usage()
 		os.Exit(2)
 	}
-	cmd := os.Args[1]
-	args := os.Args[2:]
 
 	var err error
 	switch cmd {
+	case "shell":
+		err = cmdShell(shellArgs)
 	case "run":
-		err = cmdRun(args)
+		err = cmdRun(shellArgs)
 	case "list", "ls":
-		err = cmdList(args)
+		err = cmdList(shellArgs)
 	case "resolve":
-		err = cmdResolve(args)
+		err = cmdResolve(shellArgs)
 	case "attach":
-		os.Exit(cmdAttach(args))
+		os.Exit(cmdAttach(shellArgs))
 	case "clone":
-		err = cmdClone(args)
+		err = cmdClone(shellArgs)
 	case "kill":
-		err = cmdKill(args)
+		err = cmdKill(shellArgs)
 	case "detach":
-		err = cmdDetach(args)
+		err = cmdDetach(shellArgs)
 	case "write":
-		err = cmdWrite(args)
+		err = cmdWrite(shellArgs)
 	case "serve":
-		err = cmdServe(args)
+		err = cmdServe(shellArgs)
 	case "__session":
-		err = cmdSession(args)
-	case "-h", "--help", "help":
+		err = cmdSession(shellArgs)
+	case "help":
 		usage()
 		return
 	default:
@@ -66,6 +92,53 @@ func main() {
 	}
 }
 
+// dispatchTopLevel translates raw argv (without argv[0]) into a
+// (verb, rest, ok) triple. The new sugar lives here:
+//
+//   - bare `hoot`               → ("shell", nil)
+//   - `hoot @host …`            → ("shell", "--remote", "ssh://host", …)
+//   - `hoot host …` (host not   → ("shell", "--remote", "ssh://host", …)
+//     a known subcommand and not a flag)
+//   - `hoot --flag …`           → ("shell", …)
+//   - `hoot -h` / `hoot --help` → ("help", nil)
+//   - `hoot run …`, etc.        → (verb, rest)
+//
+// ok=false signals a flag-only invocation that doesn't match anything
+// (e.g. a future `hoot -X` that isn't a shell flag) and main should
+// print usage and exit 2. Today this only fires when there is no
+// recognized cmd at all, which can't happen in practice — kept as a
+// guard rail for future edits.
+func dispatchTopLevel(args []string) (string, []string, bool) {
+	if len(args) == 0 {
+		return "shell", nil, true
+	}
+	first := args[0]
+	rest := args[1:]
+	if first == "-h" || first == "--help" {
+		return "help", nil, true
+	}
+	if strings.HasPrefix(first, "@") && len(first) > 1 {
+		host := first[1:]
+		return "shell", append([]string{"--remote", "ssh://" + host}, rest...), true
+	}
+	if knownSubcommands[first] {
+		// Normalize empty slice to nil so dispatch tests can compare
+		// against nil literals.
+		if len(rest) == 0 {
+			rest = nil
+		}
+		return first, rest, true
+	}
+	if strings.HasPrefix(first, "-") {
+		// Flag-only invocation: route through shell so users can pass
+		// e.g. `hoot --remote ssh://m4mini` without an explicit verb.
+		return "shell", args, true
+	}
+	// Subcommand fallthrough: treat the first positional as a remote
+	// host shorthand, mirroring `ssh m4mini`.
+	return "shell", append([]string{"--remote", "ssh://" + first}, rest...), true
+}
+
 type exitError struct {
 	code int
 	err  error
@@ -80,6 +153,11 @@ func (e *exitError) Error() string {
 
 func usage() {
 	fmt.Fprint(os.Stderr, `hoot — reference CLI for the session library
+
+Quick shell:
+  hoot                            # spawn local default shell, attach
+  hoot @<host>                    # spawn shell on remote (ssh://<host>), attach
+  hoot <host>                     # same as @<host> (subcommand fallthrough)
 
 Usage:
   hoot run     [--remote <url>] [--state-dir <d>] [--key <k>] [--attach]
