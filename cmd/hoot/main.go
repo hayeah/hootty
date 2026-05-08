@@ -32,6 +32,7 @@ var knownSubcommands = map[string]bool{
 	"detach":    true,
 	"write":     true,
 	"serve":     true,
+	"version":   true,
 	"__session": true,
 	"-h":        true,
 	"--help":    true,
@@ -72,6 +73,8 @@ func main() {
 		err = cmdWrite(shellArgs)
 	case "serve":
 		err = cmdServe(shellArgs)
+	case "version":
+		err = cmdVersion(shellArgs)
 	case "__session":
 		err = cmdSession(shellArgs)
 	case "help":
