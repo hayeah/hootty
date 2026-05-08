@@ -84,15 +84,19 @@ scripted use.
 
 Inside an attach (mosh-style): <prefix>. detaches; <prefix>^ sends a
 literal prefix byte to the remote; <prefix>Ctrl-Z suspends hoot
-attach (resume with fg); <prefix>c clones the session; <prefix>?
-prints the HUD line for the current session and the chord help.
+attach (resume with fg); <prefix>c clones the session.
 
 On attach the terminal window title is set to a one-line summary in
 the form `+"`🦉 <id> [@host] <cwd> [<cmd...>]`"+` (`+"`@host`"+` omitted for local
 sessions, argv truncated at 60 runes). The previous title is saved
 via the xterm title stack (CSI 22;2t) and restored (CSI 23;2t) on
-detach. Inner TUIs that set their own title will override hoot's;
-press `+"`<prefix> ?`"+` for a reminder of which session you're in.
+detach. Inner TUIs that set their own title will override hoot's.
+
+The same session summary is printed once as ordinary terminal output
+just before the screen snapshot is rendered, then the visible viewport
+is scrolled into the local terminal's scrollback ring — so a single
+scroll-up after attach reveals which session you are in, without a
+live overlay that fights TUI redraws.
 
 During a remote disconnect: backoff is 1,2,4,8,16,30s capped at 30s and
 retries forever. Press any key to wake the backoff and retry now.
@@ -149,9 +153,9 @@ retries forever. Press any key to wake the backoff and retry now.
 	}
 
 	// Best-effort load of the session's StateFile to feed the HUD
-	// (terminal title + `<prefix> ?` status line). A miss here is not
-	// fatal — we just attach with an empty HUD line, which suppresses
-	// title/`?` emission downstream.
+	// (terminal title + the at-attach scrollback status line). A miss
+	// here is not fatal — runServerLoop falls back to a "[connected. K
+	// @ H]" banner, and the title stack stays untouched.
 	hud := newHUDState(loadHUDLine(remote, *stateDir, key))
 
 	exitCode, err := runAttachLoop(target, attachOpts.PrefixByte, reconnect, hud, attachOpts.Restorer)
@@ -411,11 +415,11 @@ func runAttachLoop(initial attachTarget, prefixByte byte, reconnect bool, hud *h
 			targets.set(next)
 			shared.markSwitched()
 			return nil
-		}, writers.stdout, writers.stderr, hud)
+		}, writers.stderr)
 	}()
 
 	// Reconnect loop.
-	loopErr := runConnectLoop(ctx, targets, reconnect, &size, shared, &attached, writers, restorer)
+	loopErr := runConnectLoop(ctx, targets, reconnect, &size, shared, &attached, writers, restorer, hud)
 
 	// Determine exit code from outer signals.
 	select {
@@ -451,6 +455,7 @@ func runConnectLoop(
 	attached *atomic.Bool,
 	writers attachWriters,
 	restorer TerminalRestorer,
+	hud *hudState,
 ) error {
 	gotConnectedOnce := false
 	for {
@@ -485,7 +490,7 @@ func runConnectLoop(
 		// Connected. Reset backoff and send Hello with current size.
 		shared.resetTier()
 		c, r := unpackSize(size.Load())
-		err = runSession(ctx, conn, c, r, shared, target.label, attached, writers, restorer)
+		err = runSession(ctx, conn, c, r, shared, target.label, attached, writers, restorer, hud)
 		_ = conn.Close()
 
 		if ctx.Err() != nil {
@@ -537,6 +542,7 @@ func runSession(
 	attached *atomic.Bool,
 	writers attachWriters,
 	restorer TerminalRestorer,
+	hud *hudState,
 ) error {
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
 	defer sessionCancel()
@@ -617,7 +623,7 @@ func runSession(
 	r := bufio.NewReader(conn)
 	serverDone := make(chan error, 1)
 	go func() {
-		serverDone <- runServerLoop(sessionCtx, r, label, attached, writers, restorer, func() {
+		serverDone <- runServerLoop(sessionCtx, r, label, attached, writers, restorer, hud, rows, func() {
 			lastRecv.Store(time.Now().UnixNano())
 		})
 	}()
@@ -660,9 +666,8 @@ func runSession(
 //	<prefix> .       detach (cancel ctx)
 //	<prefix> ^       send a literal prefix byte to the remote
 //	<prefix> Ctrl-Z  SIGTSTP self (resume with fg)
-//	<prefix> ?       print HUD line + one-line chord help on stdout
 //	<prefix> c       clone current session and switch to it
-func runStdinFSM(ctx context.Context, prefix byte, shared *sharedSession, cancel context.CancelFunc, clone func(context.Context) error, stdout, stderr io.Writer, hud *hudState) {
+func runStdinFSM(ctx context.Context, prefix byte, shared *sharedSession, cancel context.CancelFunc, clone func(context.Context) error, stderr io.Writer) {
 	readCh := make(chan byteOrErr, 1)
 	go func() {
 		buf := make([]byte, 1)
@@ -695,16 +700,6 @@ func runStdinFSM(ctx context.Context, prefix byte, shared *sharedSession, cancel
 		suspend: func() {
 			_ = syscall.Kill(os.Getpid(), syscall.SIGTSTP)
 		},
-		help: func() {
-			// `<prefix> ?` prints the session HUD plus the chord
-			// vocabulary. The HUD answers "which session am I in?";
-			// the chord help answers "what else can I do?". Both go
-			// to stdout — this is intentional output, not error
-			// reporting, and keeps it visible across redirects of
-			// stderr (e.g. when the user wraps `hoot attach` in a
-			// shell function that swallows stderr).
-			hud.printChord(stdout)
-		},
 		clone: func() error {
 			return clone(ctx)
 		},
@@ -713,14 +708,36 @@ func runStdinFSM(ctx context.Context, prefix byte, shared *sharedSession, cancel
 }
 
 // runServerLoop reads frames from the server and dispatches them.
-// Snapshot parts are locally phased into connect banner, scrollback,
-// viewport clear, and visible screen. Live Output writes straight to
-// stdout. Size reports go to stderr. Returns on EOF or protocol error.
-// runServerLoop reads frames from the server. The restorer's Attach is
-// already called from runAttachLoop entry (once per process); here we
-// only call Observe on each chunk for state tracking.
-func runServerLoop(ctx context.Context, r *bufio.Reader, label attachLabel, attached *atomic.Bool, writers attachWriters, restorer TerminalRestorer, markRecv func()) error {
-	connectEmitted := false
+// Snapshot parts are locally phased into:
+//
+//  1. scrollback replay (MsgSnapshotScrollback) — bytes flow straight
+//     to stdout so the local terminal walks them through its own
+//     scroll machinery and pushes lines onto the local scrollback ring.
+//  2. status-line print + viewport scroll (on first MsgSnapshotScreen):
+//     write the HUD line as a normal scrolled line, then `CSI <rows> S`
+//     to scroll the entire visible viewport (HUD + scrollback tail)
+//     into the local scrollback ring, then `CSI H` to home the cursor.
+//     The HUD line ends up as the bottom-most scrollback entry — "scroll
+//     up one line" reveals it, per the section spec. Modern xterm,
+//     iTerm2, Ghostty, kitty, Wezterm, Alacritty all push CSI-S-displaced
+//     lines into scrollback.
+//  3. visible screen (MsgSnapshotScreen payload) — written onto the
+//     now-blank viewport; the formatter's bytes fully repaint every cell.
+//
+// Subsequent MsgSnapshotScreen frames (after a reconnect re-replay)
+// take the same path so the user gets a fresh "you reconnected to X"
+// scrollback entry on every connect.
+//
+// Live Output writes straight to stdout. Size reports go to stderr.
+// Returns on EOF or protocol error. The restorer's Attach is already
+// called from runAttachLoop entry (once per process); here we only
+// call Observe on each chunk for state tracking.
+//
+// `localRows` is the local terminal's visible row count, used as the
+// `Pn` for the `CSI Pn S` scroll-up. Passing the exact row count
+// guarantees the entire viewport is scrolled into local scrollback
+// regardless of where the cursor was before the snapshot phase.
+func runServerLoop(ctx context.Context, r *bufio.Reader, label attachLabel, attached *atomic.Bool, writers attachWriters, restorer TerminalRestorer, hud *hudState, localRows uint16, markRecv func()) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -736,11 +753,6 @@ func runServerLoop(ctx context.Context, r *bufio.Reader, label attachLabel, atta
 		}
 		switch typ {
 		case attachwire.MsgSnapshotScrollback:
-			if !connectEmitted {
-				emitConnect(writers.stdout, label)
-				connectEmitted = true
-				attached.Store(true)
-			}
 			if len(payload) > 0 {
 				if _, werr := writers.stdout.Write(payload); werr != nil {
 					return werr
@@ -750,12 +762,10 @@ func runServerLoop(ctx context.Context, r *bufio.Reader, label attachLabel, atta
 				restorer.Observe(payload)
 			}
 		case attachwire.MsgSnapshotScreen:
-			if !connectEmitted {
-				emitConnect(writers.stdout, label)
-				connectEmitted = true
+			if !attached.Load() {
 				attached.Store(true)
 			}
-			if _, werr := writers.stdout.Write([]byte("\x1b[H\x1b[2J")); werr != nil {
+			if werr := emitAttachStatus(writers.stdout, hud, label, localRows); werr != nil {
 				return werr
 			}
 			if len(payload) > 0 {
@@ -793,8 +803,53 @@ func runServerLoop(ctx context.Context, r *bufio.Reader, label attachLabel, atta
 	}
 }
 
-func emitConnect(w io.Writer, label attachLabel) {
-	fmt.Fprintf(w, "\r\n[connected. %s @ %s]\r\n", label.Session, label.Host)
+// emitAttachStatus writes the one-shot "you are attached" status line
+// into the local terminal so it lands as the bottom-most line of the
+// local scrollback ring — "scroll up one line" reveals it. The
+// sequence is engineered so that:
+//
+//   - the HUD line ends up at the BOTTOM of scrollback (newest entry),
+//     not several rows up; the user shouldn't have to hunt for it.
+//   - whatever the local terminal had in its viewport before attach
+//     is preserved in scrollback above the HUD line, instead of being
+//     wiped by the cursor-clear that the old emitConnect+CSI 2 J path
+//     used to do.
+//
+// Bytes emitted, in order:
+//
+//	CSI <localRows> ; 1 H   cursor to bottom-left of viewport
+//	CSI 2 K                 clear that bottom row (in case it had local content)
+//	\x1b[2m <line> \x1b[0m  the dim-styled HUD line on the bottom row
+//	CSI <localRows> S       scroll up `localRows` lines: every visible
+//	                        row (including the HUD on the bottom row)
+//	                        is appended to local scrollback in order;
+//	                        viewport becomes blank.
+//	CSI H                   cursor home for the snapshot paint
+//
+// On terminals that implement `CSI Pn S` per xterm (xterm, iTerm2,
+// Ghostty, kitty, Wezterm, Alacritty all do), the displaced rows are
+// appended to scrollback in viewport order — so after the scroll the
+// scrollback's last row is the HUD line. On a hypothetical terminal
+// that doesn't push CSI-S-displaced rows into scrollback, the HUD line
+// would simply not appear in scrollback; the screen still paints
+// correctly because the snapshot is a full repaint of the viewport.
+//
+// `hud` is allowed to be nil or carry an empty Line(); in that case we
+// fall back to a "[connected. K @ H]" string so every attach has at
+// least a session-and-host marker.
+func emitAttachStatus(w io.Writer, hud *hudState, label attachLabel, localRows uint16) error {
+	line := hud.Line()
+	if line == "" {
+		line = fmt.Sprintf("[connected. %s @ %s]", label.Session, label.Host)
+	}
+	if localRows == 0 {
+		localRows = 24
+	}
+	seq := fmt.Sprintf("\x1b[%d;1H\x1b[2K\x1b[2m%s\x1b[0m\x1b[%dS\x1b[H", localRows, line, localRows)
+	if _, err := io.WriteString(w, seq); err != nil {
+		return err
+	}
+	return nil
 }
 
 // emitDetach writes the restorer's cleanup bytes followed by the

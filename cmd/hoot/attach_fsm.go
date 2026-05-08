@@ -28,7 +28,6 @@ const (
 	chordDetach
 	chordLiteral
 	chordSuspend
-	chordHelp
 	chordClone
 )
 
@@ -224,8 +223,8 @@ func isPrefixKey(prefix byte, ev keyEvent) bool {
 }
 
 // matchChord classifies the chord follow-up event. The chord vocabulary
-// is mosh-style: '.' detach, '^' literal-prefix, Ctrl-Z suspend, '?'
-// help, 'c' clone. Each is recognized in either legacy or CSI u form.
+// is mosh-style: '.' detach, '^' literal-prefix, Ctrl-Z suspend, 'c'
+// clone. Each is recognized in either legacy or CSI u form.
 func matchChord(ev keyEvent) chordCmd {
 	if !ev.csiU {
 		if len(ev.raw) != 1 {
@@ -238,8 +237,6 @@ func matchChord(ev keyEvent) chordCmd {
 			return chordLiteral
 		case 0x1a:
 			return chordSuspend
-		case '?':
-			return chordHelp
 		case 'c':
 			return chordClone
 		}
@@ -273,11 +270,6 @@ func matchChord(ev keyEvent) chordCmd {
 	case any(122, 90) && hasCtrl:
 		// Ctrl-Z under kitty: codepoint 'z'/'Z' with ctrl modifier.
 		return chordSuspend
-	case any(63) && !hasCtrl:
-		// '?' (codepoint 63). On US this is shift+'/', so a CSI u
-		// report MAY encode it as cp=47 (slash) with shift, or cp=63
-		// directly. We accept the explicit '?' codepoint.
-		return chordHelp
 	case any(99, 67) && !hasCtrl:
 		// 'c' or 'C' without ctrl.
 		return chordClone
@@ -292,7 +284,6 @@ type fsmActions struct {
 	literal      func()
 	detach       func()
 	suspend      func()
-	help         func()
 	clone        func() error
 }
 
@@ -330,8 +321,6 @@ func runChordFSM(prefix byte, read readByteFn, act fsmActions, stderr io.Writer)
 				act.literal()
 			case chordSuspend:
 				act.suspend()
-			case chordHelp:
-				act.help()
 			case chordClone:
 				if err := act.clone(); err != nil && stderr != nil {
 					fmt.Fprintf(stderr, "\r\n\x1b[2m[hoot: clone failed: %v]\x1b[0m\r\n", err)

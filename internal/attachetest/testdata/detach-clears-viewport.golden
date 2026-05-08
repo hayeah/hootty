@@ -1,8 +1,6 @@
 cols=40 rows=8
 cursor=3,1 visible=true active=primary sgr=default
 formatVT:
-
-[connected. detach @ local]
 history-01
 history-02
 history-03
@@ -39,5 +37,13 @@ history-33
 history-34
 history-35
 history-36
+history-37
+history-38
+history-39
+history-40
+history-41
+history-42
+history-43
+<ESC>[0m<ESC>[2m[connected. detach @ local]<ESC>[0m
 
 [disconnected. detach @ local]<ESC>[0m<ESC>[3;1H

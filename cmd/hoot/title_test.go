@@ -139,34 +139,13 @@ func TestHUDStateEmptyLineNoEmit(t *testing.T) {
 	}
 }
 
-func TestHUDStatePrintChord(t *testing.T) {
+func TestHUDStateLine(t *testing.T) {
 	hud := newHUDState("🦉 abcde /x sh")
-	var buf bytes.Buffer
-	hud.printChord(&buf)
-	got := buf.String()
-
-	if !strings.Contains(got, "🦉 abcde /x sh") {
-		t.Errorf("printChord missing HUD line: %q", got)
+	if hud.Line() != "🦉 abcde /x sh" {
+		t.Errorf("Line() = %q, want %q", hud.Line(), "🦉 abcde /x sh")
 	}
-	if !strings.HasPrefix(got, "\r\n") {
-		t.Errorf("printChord did not lead with CRLF: %q", got)
-	}
-	if !strings.HasSuffix(got, "\r\n") {
-		t.Errorf("printChord did not trail with CRLF: %q", got)
-	}
-	// Chord help should still be visible — losing it would be a
-	// regression for users who hit `?` expecting docs.
-	if !strings.Contains(got, "detach") || !strings.Contains(got, "clone") {
-		t.Errorf("printChord missing chord-help text: %q", got)
-	}
-}
-
-func TestHUDStatePrintChordEmpty(t *testing.T) {
-	hud := newHUDState("")
-	var buf bytes.Buffer
-	hud.printChord(&buf)
-	got := buf.String()
-	if !strings.Contains(got, "session info unavailable") {
-		t.Errorf("printChord with empty line missing fallback: %q", got)
+	var nilHud *hudState
+	if nilHud.Line() != "" {
+		t.Errorf("(*hudState)(nil).Line() = %q, want \"\"", nilHud.Line())
 	}
 }
