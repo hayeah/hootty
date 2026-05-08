@@ -1,8 +1,10 @@
 package session
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -194,6 +196,167 @@ func TestFrameDecoderTruncatedFrameIsEOF(t *testing.T) {
 	}
 	if _, err := dec.Next(); !errors.Is(err, io.EOF) {
 		t.Fatalf("expected EOF on truncated frame, got %v", err)
+	}
+}
+
+// TestSpacerBridgesLongIdle confirms the type=3 spacer path:
+// a fixture with a single long-idle gap is read back with the
+// correct cumulative timestamp on the next frame.
+func TestSpacerBridgesLongIdle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pty.hootty.log")
+	// Hand-build: prelude resize, type=3 spacer (advance ~70s),
+	// type=1 output at delta=33ms beyond the spacer.
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := f.WriteString(FrameMagic + "\n\n"); err != nil {
+		t.Fatalf("preamble: %v", err)
+	}
+	// Prelude resize.
+	f.Write(frameHeader(FrameTypeResize, 0, 4))
+	f.Write(encResize(80, 24))
+	// Spacer for 70_000 ms.
+	f.Write(frameHeader(FrameTypeSpacer, 0, 4))
+	var spacer [4]byte
+	binary.LittleEndian.PutUint32(spacer[:], 70_000)
+	f.Write(spacer[:])
+	// Output frame at delta=33ms after the spacer.
+	f.Write(frameHeader(FrameTypeOutput, 33, 5))
+	f.Write([]byte("hello"))
+	f.Close()
+
+	r, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer r.Close()
+	dec := NewFrameDecoder(r)
+	// Skip prelude.
+	if _, err := dec.Next(); err != nil {
+		t.Fatalf("prelude: %v", err)
+	}
+	// Spacer is silently consumed; next call returns the output frame.
+	fr, err := dec.Next()
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if fr.Type != FrameTypeOutput {
+		t.Fatalf("type=%d, want %d", fr.Type, FrameTypeOutput)
+	}
+	wantAt := 70_033 * time.Millisecond
+	if fr.At != wantAt {
+		t.Fatalf("At = %v, want %v", fr.At, wantAt)
+	}
+	if string(fr.Payload) != "hello" {
+		t.Fatalf("payload = %q", fr.Payload)
+	}
+}
+
+// TestRecorderEmitsSpacerOnLongIdle verifies the writer side: a
+// recorder whose started clock is far in the past produces a spacer
+// frame ahead of the next output frame.
+func TestRecorderEmitsSpacerOnLongIdle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pty.hootty.log")
+	rec, err := NewRecorder(path, 80, 24)
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+	// Backdate the recorder so any subsequent write is ~70s into the
+	// recording — well beyond the uint16 ms cap.
+	rec.started = time.Now().Add(-70 * time.Second)
+	if _, err := rec.Write([]byte("late")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	r2, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer r2.Close()
+	dec := NewFrameDecoder(r2)
+	// Prelude resize.
+	if _, err := dec.Next(); err != nil {
+		t.Fatalf("prelude: %v", err)
+	}
+	// Output frame: At should reflect >= 65535ms from the spacer
+	// advance plus a small residual delta. Spacer itself is consumed
+	// internally by FrameDecoder.
+	fr, err := dec.Next()
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if fr.Type != FrameTypeOutput {
+		t.Fatalf("type=%d", fr.Type)
+	}
+	if fr.At < 65*time.Second {
+		t.Fatalf("At = %v, want >= 65s (spacer + residual)", fr.At)
+	}
+	if string(fr.Payload) != "late" {
+		t.Fatalf("payload = %q", fr.Payload)
+	}
+}
+
+// TestAsciicastRoundtripPayloadIdentity exercises the binary →
+// asciicast → payload-identity contract. Walk recorded output bytes,
+// transcode to asciicast, parse back, and the concatenated `o` event
+// payloads must equal the originally-recorded bytes.
+func TestAsciicastRoundtripPayloadIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pty.hootty.log")
+	rec, err := NewRecorder(path, 80, 24)
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+	chunks := [][]byte{
+		[]byte("first chunk\r\n"),
+		[]byte("\x1b[31mred\x1b[0m\r\n"),
+		[]byte("done\r\n"),
+	}
+	var want bytes.Buffer
+	for _, c := range chunks {
+		if _, err := rec.Write(c); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		want.Write(c)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	in, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer in.Close()
+	var out bytes.Buffer
+	if err := WriteAsciicastJSONL(in, &out, AsciicastHeader{Version: 2}); err != nil {
+		t.Fatalf("WriteAsciicastJSONL: %v", err)
+	}
+
+	// Concatenate every output-event payload.
+	scanner := bufio.NewScanner(&out)
+	first := true
+	var got bytes.Buffer
+	for scanner.Scan() {
+		if first {
+			first = false
+			continue // skip header
+		}
+		var ev []any
+		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
+			t.Fatalf("event parse: %v", err)
+		}
+		if kind, _ := ev[1].(string); kind == "o" {
+			if data, _ := ev[2].(string); data != "" {
+				got.WriteString(data)
+			}
+		}
+	}
+	if got.String() != want.String() {
+		t.Fatalf("roundtrip payload mismatch:\n got %q\nwant %q", got.String(), want.String())
 	}
 }
 

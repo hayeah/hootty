@@ -151,7 +151,7 @@ func TestDispatchTopLevel_AtSignAlone(t *testing.T) {
 // forgets the other, this test catches it.
 func TestKnownSubcommandsCoversDispatchSwitch(t *testing.T) {
 	expected := map[string]bool{
-		"run": true, "list": true, "ls": true, "resolve": true,
+		"run": true, "list": true, "ls": true, "log": true, "resolve": true,
 		"attach": true, "clone": true, "kill": true, "detach": true,
 		"write": true, "serve": true, "__session": true,
 		"-h": true, "--help": true, "help": true,

@@ -2,10 +2,12 @@ package session
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -503,3 +505,126 @@ func ReadOutputEvents(path string, window time.Duration) ([]AsciicastOutputEvent
 	return events[i:], nil
 }
 
+// AsciicastHeader is the v2 header line emitted by
+// WriteAsciicastJSONL. Optional fields (Command, Title, Timestamp)
+// are populated by callers from state.json.
+type AsciicastHeader struct {
+	Version   int    `json:"version"`
+	Width     int    `json:"width"`
+	Height    int    `json:"height"`
+	Timestamp int64  `json:"timestamp,omitempty"`
+	Command   string `json:"command,omitempty"`
+	Title     string `json:"title,omitempty"`
+}
+
+// WriteAsciicastJSONL transcodes a hootty.log v1 stream from in
+// into asciicast v2 JSONL on out. The first frame (prelude resize)
+// drives the header's width/height. Subsequent frames emit:
+//
+//   - type=1 (output)  → [seconds, "o", payload]
+//   - type=2 (resize)  → [seconds, "r", "COLSxROWS"]
+//   - type=3 (spacer)  → no event (FrameDecoder skips it; the next
+//     frame's At reflects the gap)
+//
+// header.Timestamp / Command / Title pass through verbatim. Width
+// and Height are overwritten from the prelude frame; callers should
+// leave them as zero in the input header.
+func WriteAsciicastJSONL(in io.Reader, out io.Writer, header AsciicastHeader) error {
+	dec := NewFrameDecoder(in)
+	first, err := dec.Next()
+	if err != nil {
+		return fmt.Errorf("asciicast: read prelude: %w", err)
+	}
+	if first.Type != FrameTypeResize || len(first.payloadOrEmpty()) != 4 {
+		return fmt.Errorf("asciicast: first frame is not a resize (got type=%d, len=%d)", first.Type, len(first.Payload))
+	}
+	cols := binary.LittleEndian.Uint16(first.Payload[0:2])
+	rows := binary.LittleEndian.Uint16(first.Payload[2:4])
+	if header.Version == 0 {
+		header.Version = 2
+	}
+	header.Width = int(cols)
+	header.Height = int(rows)
+
+	enc := json.NewEncoder(out)
+	if err := enc.Encode(header); err != nil {
+		return fmt.Errorf("asciicast: write header: %w", err)
+	}
+	for {
+		fr, err := dec.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("asciicast: read frame: %w", err)
+		}
+		seconds := fr.At.Seconds()
+		switch fr.Type {
+		case FrameTypeOutput:
+			if err := enc.Encode([]any{seconds, "o", string(fr.Payload)}); err != nil {
+				return err
+			}
+		case FrameTypeResize:
+			if len(fr.Payload) != 4 {
+				return fmt.Errorf("asciicast: resize payload len=%d, want 4", len(fr.Payload))
+			}
+			c := binary.LittleEndian.Uint16(fr.Payload[0:2])
+			r := binary.LittleEndian.Uint16(fr.Payload[2:4])
+			geom := fmt.Sprintf("%dx%d", c, r)
+			if err := enc.Encode([]any{seconds, "r", geom}); err != nil {
+				return err
+			}
+		default:
+			// Unknown future types are skipped (forward-compat).
+		}
+	}
+}
+
+// payloadOrEmpty is a tiny helper used inside WriteAsciicastJSONL's
+// preamble guard so a nil Payload doesn't panic on len().
+func (f Frame) payloadOrEmpty() []byte {
+	if f.Payload == nil {
+		return nil
+	}
+	return f.Payload
+}
+
+// LoadStateFile reads <stateDir>/<key>/state.json from disk. Used
+// by `hoot log --format asciinema` to populate header metadata
+// (timestamp/command/title). Returns nil, nil on a missing file so
+// callers can downgrade to a default header instead of failing.
+func LoadStateFile(path string) (*StateFile, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var st StateFile
+	if err := json.Unmarshal(data, &st); err != nil {
+		return nil, fmt.Errorf("state.json: %w", err)
+	}
+	return &st, nil
+}
+
+// AsciicastHeaderFromState builds an AsciicastHeader populated from
+// state.json. Width/Height are stubbed to zero and overwritten by
+// WriteAsciicastJSONL from the recording's prelude frame; this
+// function only fills in the metadata columns.
+func AsciicastHeaderFromState(st *StateFile) AsciicastHeader {
+	h := AsciicastHeader{Version: 2}
+	if st == nil {
+		return h
+	}
+	if !st.Session.CreatedAt.IsZero() {
+		h.Timestamp = st.Session.CreatedAt.Unix()
+	}
+	if len(st.Session.Argv) > 0 {
+		h.Command = strings.Join(st.Session.Argv, " ")
+	}
+	if st.Session.Key != "" {
+		h.Title = st.Session.Key
+	}
+	return h
+}
