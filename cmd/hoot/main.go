@@ -83,7 +83,9 @@ func usage() {
 
 Usage:
   hoot run     [--remote <url>] [--state-dir <d>] [--key <k>] [--attach]
-                    [--no-reconnect] [--prefix-key <key>] -- <cmd> [args...]
+                    [--no-reconnect] [--prefix-key <key>]
+                    [--cwd <path>] [--env NAME[=VALUE]] [--env-file <path>]
+                    -- <cmd> [args...]
   hoot list    [--remote <url>] [--state-dir <d>]
   hoot resolve [--remote <url>] [--state-dir <d>] <id-or-prefix>
   hoot clone   [--remote <url>] [--state-dir <d>] [--key <new-key>]

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"golang.org/x/term"
 
@@ -31,6 +32,11 @@ func cmdRun(args []string) error {
 	attach := fs.Bool("attach", false, "attach to the new session after it starts")
 	noReconnect := fs.Bool("no-reconnect", false, "exit on first drop instead of auto-reconnecting during post-spawn attach (--remote only)")
 	prefixSpec := fs.String("prefix-key", "C-^", "command prefix byte for post-spawn attach (e.g. C-^, ^a, 0x1c)")
+	cwdFlag := fs.String("cwd", "", "working directory for the spawned command (default: current directory)")
+	var envSpecs stringListFlag
+	var envFiles stringListFlag
+	fs.Var(&envSpecs, "env", "env override NAME or NAME=VALUE (repeatable)")
+	fs.Var(&envFiles, "env-file", "dotenv-style env override file (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -43,13 +49,27 @@ func cmdRun(args []string) error {
 		return fmt.Errorf("run: %w", err)
 	}
 
+	envOverrides, err := parseEnvOverrides(envFiles, envSpecs, os.LookupEnv)
+	if err != nil {
+		return err
+	}
+	cwd, err := resolveRunCWD(*cwdFlag)
+	if err != nil {
+		return err
+	}
+
 	remote, err := parseRemoteFlag(*remoteFlag, *stateDir)
 	if err != nil {
 		return err
 	}
 	if remote != nil {
 		defer remote.Close()
-		payload, err := json.Marshal(createSessionReq{Argv: rest, Key: *key})
+		payload, err := json.Marshal(createSessionReq{
+			Argv: rest,
+			Key:  *key,
+			CWD:  *cwdFlag,
+			Env:  envOverrides,
+		})
 		if err != nil {
 			return err
 		}
@@ -112,15 +132,12 @@ func cmdRun(args []string) error {
 		}
 	}
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("getcwd: %w", err)
-	}
 	if _, err := spawnSessionFromSpec(*stateDir, *key, spawnSpec{
-		Argv: rest,
-		CWD:  cwd,
-		Cols: cols,
-		Rows: rows,
+		Argv:         rest,
+		CWD:          cwd,
+		EnvOverrides: envOverrides,
+		Cols:         cols,
+		Rows:         rows,
 	}); err != nil {
 		return fmt.Errorf("run: session did not start: %w", err)
 	}
@@ -142,6 +159,25 @@ func cmdRun(args []string) error {
 		return &exitError{code: exitCode, err: err}
 	}
 	return nil
+}
+
+// resolveRunCWD returns an absolute working directory for the local
+// spawn path: empty falls back to os.Getwd; non-empty is absolutized so
+// state.json records the resolved path even when the caller passed a
+// relative --cwd.
+func resolveRunCWD(flag string) (string, error) {
+	if flag == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("getcwd: %w", err)
+		}
+		return cwd, nil
+	}
+	abs, err := filepath.Abs(flag)
+	if err != nil {
+		return "", fmt.Errorf("--cwd %q: %w", flag, err)
+	}
+	return abs, nil
 }
 
 // generateKey returns a random short id that doesn't collide with

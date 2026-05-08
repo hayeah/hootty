@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -21,10 +22,17 @@ import (
 //	      don't have to reason about quoting.
 //	key:  optional — if provided and not currently alive, used as
 //	      the session id. Otherwise generateKey picks one.
+//	cwd:  optional working directory for the spawned command,
+//	      resolved on the server. Empty falls back to the server's
+//	      own current directory.
+//	env:  optional one-shot env overrides applied on top of the
+//	      server's environment when forking the session.
 type createSessionReq struct {
-	Cmd  string   `json:"cmd,omitempty"`
-	Argv []string `json:"argv,omitempty"`
-	Key  string   `json:"key,omitempty"`
+	Cmd  string            `json:"cmd,omitempty"`
+	Argv []string          `json:"argv,omitempty"`
+	Key  string            `json:"key,omitempty"`
+	CWD  string            `json:"cwd,omitempty"`
+	Env  map[string]string `json:"env,omitempty"`
 }
 
 // createSession is POST /sessions. It forks `hoot __session`
@@ -70,16 +78,17 @@ func (s *serveState) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cwd, err := os.Getwd()
+	cwd, err := resolveServeCWD(body.CWD)
 	if err != nil {
-		http.Error(w, "getcwd: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	sockPath, err := spawnSessionFromSpec(s.stateDir, key, spawnSpec{
-		Argv: argv,
-		CWD:  cwd,
-		Cols: 80,
-		Rows: 24,
+		Argv:         argv,
+		CWD:          cwd,
+		EnvOverrides: body.Env,
+		Cols:         80,
+		Rows:         24,
 	})
 	if err != nil {
 		http.Error(w, "spawn: "+err.Error(), http.StatusInternalServerError)
@@ -104,6 +113,25 @@ func (s *serveState) createSession(w http.ResponseWriter, r *http.Request) {
 		Alive:      true,
 		SocketPath: sockPath,
 	})
+}
+
+// resolveServeCWD picks the working directory for a server-side spawn:
+// empty falls back to the server's os.Getwd; a relative path is
+// absolutized so state.json doesn't record a path that depends on the
+// server's cwd at lookup time.
+func resolveServeCWD(req string) (string, error) {
+	if req == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("getcwd: %w", err)
+		}
+		return cwd, nil
+	}
+	abs, err := filepath.Abs(req)
+	if err != nil {
+		return "", fmt.Errorf("cwd %q: %w", req, err)
+	}
+	return abs, nil
 }
 
 func writeCloneError(w http.ResponseWriter, err error) {
