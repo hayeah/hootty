@@ -50,15 +50,20 @@ func (s *serveState) createSession(w http.ResponseWriter, r *http.Request) {
 	if len(argv) == 0 {
 		body.Cmd = strings.TrimSpace(body.Cmd)
 		if body.Cmd == "" {
-			http.Error(w, "cmd (or argv) is required", http.StatusBadRequest)
-			return
+			// Both argv and cmd empty: fall back to the server's
+			// default shell. This is the path `hoot @host` takes —
+			// the remote `hoot serve` resolves $SHELL on the remote
+			// box so the user gets their own login shell, not the
+			// caller's.
+			argv = []string{resolveDefaultShell()}
+		} else {
+			parsed, perr := splitCmd(body.Cmd)
+			if perr != nil {
+				http.Error(w, "parse cmd: "+perr.Error(), http.StatusBadRequest)
+				return
+			}
+			argv = parsed
 		}
-		parsed, perr := splitCmd(body.Cmd)
-		if perr != nil {
-			http.Error(w, "parse cmd: "+perr.Error(), http.StatusBadRequest)
-			return
-		}
-		argv = parsed
 	}
 	if len(argv) == 0 {
 		http.Error(w, "cmd has no tokens", http.StatusBadRequest)
