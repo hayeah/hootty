@@ -31,7 +31,7 @@ func cmdLog(args []string) error {
 	fs := flag.NewFlagSet("log", flag.ContinueOnError)
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), `Usage:
-  hoot log [<id-or-prefix>] [--format vt|plain|asciinema] [--state-dir <d>] [--strict] [--all]
+  hoot log [<id-or-prefix>] [--format vt|plain|asciinema] [--state-dir <d>] [--strict] [--all] [--output <file>]
 
 View a recorded session's PTY log. With no positional argument and on
 a tty, an interactive fzf picker resolves the session (matches `+"`hoot attach`"+`).
@@ -57,11 +57,14 @@ Flags:
   --state-dir <d>    session state directory (default: ~/.hoot)
   --strict           exact id-prefix match only — no fzf, no picker
   --all              include exited (dead) sessions in id-prefix and picker resolution
+  --output <file>    write to file instead of stdout; safe when viewing the
+                     current session from inside itself
 
 Common usage:
   hoot log abc                              # screen render of the recording
   hoot log abc | less                       # paged plain text
   hoot log abc | grep -i error              # greppable plain text
+  hoot log abc --output abc.txt             # safe explicit file output
   hoot log abc --format asciinema | asciinema play -
   hoot log                                  # interactive picker (live only)
   hoot log --all                            # picker over live + exited sessions
@@ -69,6 +72,7 @@ Common usage:
 	}
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
 	formatFlag := fs.String("format", "", "output format: vt|plain|asciinema (default vt on tty, plain on pipe)")
+	outputPath := fs.String("output", "", "write output to file instead of stdout")
 	strict := fs.Bool("strict", false, "exact id-prefix match only — no fzf, no picker")
 	all := fs.Bool("all", false, "include exited (dead) sessions in id-prefix and picker resolution")
 	if err := fs.Parse(args); err != nil {
@@ -93,22 +97,77 @@ Common usage:
 	if err != nil {
 		return &exitError{code: code, err: err}
 	}
+	if err := errIfSelfLogSession(key, *outputPath); err != nil {
+		return &exitError{code: 2, err: err}
+	}
 
 	logPath := filepath.Join(*stateDir, key, "pty.hootty.log")
 	statePath := filepath.Join(*stateDir, key, "state.json")
+	out, closeOut, err := logOutputWriter(logPath, *outputPath)
+	if err != nil {
+		return err
+	}
+	defer closeOut()
 
 	switch format {
 	case "asciinema":
-		return runLogAsciinema(logPath, statePath, os.Stdout)
+		return runLogAsciinema(logPath, statePath, out)
 	case "vt", "plain":
 		rfmt := session.ReplayFormatVT
 		if format == "plain" {
 			rfmt = session.ReplayFormatPlain
 		}
-		return runLogReplay(logPath, rfmt, os.Stdout)
+		return runLogReplay(logPath, rfmt, out)
 	default:
 		return &exitError{code: 2, err: fmt.Errorf("unknown --format %q", format)}
 	}
+}
+
+func logOutputWriter(logPath, outputPath string) (io.Writer, func(), error) {
+	if outputPath == "" {
+		return os.Stdout, func() {}, nil
+	}
+	same, err := samePath(logPath, outputPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if same {
+		return nil, nil, &exitError{code: 2, err: fmt.Errorf("--output must not overwrite the source recording: %s", outputPath)}
+	}
+	f, err := os.OpenFile(outputPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return nil, nil, err
+	}
+	return f, func() { _ = f.Close() }, nil
+}
+
+func samePath(a, b string) (bool, error) {
+	absA, err := filepath.Abs(a)
+	if err != nil {
+		return false, err
+	}
+	absB, err := filepath.Abs(b)
+	if err != nil {
+		return false, err
+	}
+	if absA == absB {
+		return true, nil
+	}
+	statA, errA := os.Stat(absA)
+	statB, errB := os.Stat(absB)
+	if errA == nil && errB == nil {
+		return os.SameFile(statA, statB), nil
+	}
+	if os.IsNotExist(errA) || os.IsNotExist(errB) {
+		return false, nil
+	}
+	if errA != nil {
+		return false, errA
+	}
+	if errB != nil {
+		return false, errB
+	}
+	return false, nil
 }
 
 // resolveLogFormat picks the output format. Empty flag means

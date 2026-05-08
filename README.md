@@ -91,7 +91,7 @@ hoot run     [--remote <url>] [--state-dir <dir>] [--key <key>] [--attach]
                   [--cwd <path>] [--env NAME[=VALUE]] [--env-file <path>]
                   -- <cmd> [args...]
 hoot list    [--remote <url>] [--state-dir <dir>] [--json] [--all]
-hoot log     [--state-dir <dir>] [--strict] [--all]
+hoot log     [--state-dir <dir>] [--strict] [--all] [--output <file>]
                   [--format vt|plain|asciinema] [<id-or-prefix>]
 hoot resolve [--remote <url>] [--state-dir <dir>] <id-or-prefix>
 hoot clone   [--remote <url>] [--state-dir <dir>] [--key <new-key>]
@@ -144,11 +144,14 @@ on entry and refuse with a tmux-shaped error:
 hoot attach: sessions should be nested with care, unset $HOOT_SESSION to force (already attached to "abc123")
 ```
 
-Read-only verbs (`hoot list`, `hoot log`, `hoot resolve`, `hoot kill`,
+Read-only verbs (`hoot list`, `hoot resolve`, `hoot kill`,
 `hoot detach`, `hoot write`) still work inside a session, as does
-fire-and-forget `hoot run` (without `--attach`). To genuinely nest —
-e.g. for a hoot inside a hoot for testing — `unset HOOT_SESSION`
-first.
+fire-and-forget `hoot run` (without `--attach`). `hoot log` also works,
+except it refuses to write the current session's own log to stdout
+because that would append the rendered log back into the same PTY
+recording. Use `hoot log --output FILE $HOOT_SESSION` for that case.
+To genuinely nest — e.g. for a hoot inside a hoot for testing —
+`unset HOOT_SESSION` first.
 
 `--state-dir` defaults to `~/.hoot` for every subcommand.
 
@@ -264,6 +267,7 @@ hoot log abc                              # screen render of the recording (defa
 hoot log abc | less                       # paged plain text (default on pipe)
 hoot log abc | grep -i error              # greppable plain text
 hoot log abc --format vt                  # explicit VT bytes (renders the screen)
+hoot log abc --output abc.txt             # safe explicit file output
 hoot log abc --format asciinema | asciinema play -
 hoot log                                  # interactive picker over local sessions
 ```
@@ -285,6 +289,13 @@ Default `--format`:
   final screen.
 - `plain` if stdout is a pipe — `hoot log abc | grep error` works on
   visible text.
+
+Use `--output FILE` to write the rendered log to a file instead of
+stdout. This is the safe path when you are inside a hoot session and
+want to inspect that same session's recording: `hoot log $HOOT_SESSION`
+would write the rendered log back to the session PTY and record itself,
+so it is refused by default; `hoot log --output self.txt $HOOT_SESSION`
+is allowed.
 
 Resolution shares its routing matrix with `hoot attach`: no arg + tty
 drops into an fzf picker; a pattern that doesn't id-prefix-match falls

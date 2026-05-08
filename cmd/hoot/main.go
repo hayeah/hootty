@@ -168,7 +168,7 @@ Usage:
                     [--cwd <path>] [--env NAME[=VALUE]] [--env-file <path>]
                     -- <cmd> [args...]
   hoot list    [--remote <url>] [--state-dir <d>]
-  hoot log     [--state-dir <d>] [--strict]
+  hoot log     [--state-dir <d>] [--strict] [--output <file>]
                     [--format vt|plain|asciinema] [<id-or-prefix>]
   hoot resolve [--remote <url>] [--state-dir <d>] <id-or-prefix>
   hoot clone   [--remote <url>] [--state-dir <d>] [--key <new-key>]
@@ -192,7 +192,11 @@ chars from 0-9a-z minus l/o) is generated.
 tty (replays the recording into a fresh libghostty terminal and
 emits its visible state) and `+"`plain`"+` on a pipe (greppable text).
 The `+"`asciinema`"+` format emits asciicast v2 JSONL — pipe to
-`+"`asciinema play -`"+` to replay at recorded timing.
+`+"`asciinema play -`"+` to replay at recorded timing. Use
+`+"`hoot log --output FILE`"+` to write a recording to a file instead
+of stdout; this is required when viewing the current session from
+inside itself, otherwise stdout would append the rendered log back
+into the same PTY recording.
 
 Anywhere a session key is accepted, you can pass either the full id
 or any unique prefix (minimum 3 characters). Ambiguous prefixes
@@ -210,7 +214,10 @@ with fg); <prefix>? prints help. Default prefix is C-^ (Ctrl-^, 0x1e).
 Every spawned hoot session publishes $HOOT_SESSION=<key> in the
 shell's environment. Attach paths (`+"`hoot`, `hoot @<host>`, `hoot attach`, `hoot run --attach`"+`)
 refuse to nest when $HOOT_SESSION is set, mirroring tmux. Read-only
-verbs (`+"`list`, `log`, `resolve`, `kill`, `detach`, `write`"+`) still work.
+verbs (`+"`list`, `resolve`, `kill`, `detach`, `write`"+`) still work.
+`+"`hoot log`"+` also works, except it refuses to write the current
+session's own log to stdout; use `+"`hoot log --output FILE $HOOT_SESSION`"+`
+for that case.
 Use `+"`unset HOOT_SESSION`"+` to override.
 `)
 }
