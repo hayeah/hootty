@@ -75,11 +75,21 @@ type Recorder struct {
 	// lastEmittedMs is the ms-since-recording-start of the most
 	// recent emitted frame. Used to compute ts_delta_ms (and to
 	// decide whether a spacer is needed).
+	//
+	// Invariant: every uint64 ms-time stored elsewhere on the
+	// Recorder (currently pendingBucketMs) MUST be >= lastEmittedMs.
+	// Subtractions of the form `someMs - lastEmittedMs` rely on
+	// this — wrap-around in uint64 produces a value that satisfies
+	// `> 65535` and locks bridgeIdleLocked into a runaway spacer
+	// loop. Write's bucket-floor and bridgeIdleLocked's early-return
+	// together enforce this.
 	lastEmittedMs uint64
 
 	// pendingBucketMs is the bucket-start time (ms since recording
 	// start) of the in-flight type=1 buffer. Zero means no pending
-	// buffer.
+	// buffer. Always >= lastEmittedMs (see Write — bucket is
+	// floored to lastEmittedMs when (now/33)*33 would round below
+	// a recent RecordResize's non-aligned timestamp).
 	pendingBucketMs uint64
 	// pendingHasBucket distinguishes "no pending output" from
 	// "pending output for bucket=0" — the very first output frame's
@@ -135,6 +145,15 @@ func (r *Recorder) Write(data []byte) (int, error) {
 	defer r.mu.Unlock()
 	now := r.nowMsLocked()
 	bucket := (now / frameBucketMs) * frameBucketMs
+	// A RecordResize at a non-bucket-aligned ms R sets lastEmittedMs=R;
+	// a Write within the same 33ms window then has (now/33)*33 < R.
+	// Letting bucket regress below lastEmittedMs would make the next
+	// flushPendingLocked → bridgeIdleLocked(bucket) underflow into a
+	// runaway spacer loop. Floor bucket to lastEmittedMs to keep the
+	// monotonic invariant; the resulting frame just records ts_delta=0.
+	if bucket < r.lastEmittedMs {
+		bucket = r.lastEmittedMs
+	}
 
 	if r.pendingHasBucket && bucket != r.pendingBucketMs {
 		if err := r.flushPendingLocked(); err != nil {
@@ -209,7 +228,17 @@ func (r *Recorder) nowMsLocked() uint64 {
 // lastEmittedMs is advanced so that the next frame's ts_delta_ms
 // fits in uint16. Idles longer than ~49.7 days chain multiple
 // spacers.
+//
+// Callers must respect the lastEmittedMs invariant: nowMs >=
+// lastEmittedMs. Defense in depth: if the invariant is violated
+// (a regressed nowMs), the unsigned subtraction below would wrap
+// around to ~2^64 and the loop's `> 65535` check would lock the
+// recorder into a spacer-flood that fills the disk at ~MB/s.
+// Bail early so a misbehaving caller costs zero spacer frames.
 func (r *Recorder) bridgeIdleLocked(nowMs uint64) error {
+	if nowMs <= r.lastEmittedMs {
+		return nil
+	}
 	for nowMs-r.lastEmittedMs > 65535 {
 		gap := nowMs - r.lastEmittedMs
 		var advance uint32
