@@ -153,7 +153,8 @@ func TestKnownSubcommandsCoversDispatchSwitch(t *testing.T) {
 	expected := map[string]bool{
 		"run": true, "list": true, "ls": true, "log": true, "resolve": true,
 		"attach": true, "clone": true, "kill": true, "detach": true,
-		"write": true, "serve": true, "__session": true,
+		"write": true, "serve": true, "version": true, "install-remote": true,
+		"__session": true,
 		"-h": true, "--help": true, "help": true,
 	}
 	if !reflect.DeepEqual(knownSubcommands, expected) {
