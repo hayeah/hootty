@@ -17,6 +17,34 @@ PTY and runs Ghostty's VT parser against the byte stream
 
 In progress — see `docs/tasks/extract-hootty-library-with-pty-libghostty-drop-tmux-spawn/spec.md`.
 
+## Install
+
+Released binaries (darwin-arm64, linux-amd64, linux-arm64; Linux is fully
+static via musl):
+
+```sh
+# latest stable, default install dir ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/hayeah/hootty/master/install.sh | sh
+
+# pin a specific tag, custom dir
+curl -fsSL https://raw.githubusercontent.com/hayeah/hootty/master/install.sh \
+    | sh -s -- --version v0.0.1 --install-dir /usr/local/bin
+```
+
+Installing to a remote SSH host (uses your local `hoot`'s embedded `install.sh`):
+
+```sh
+hoot install-remote devbox                     # default: remote downloads from GH
+hoot install-remote --upload devbox            # local fetch + scp (restricted egress)
+hoot install-remote --from-file ./hoot.tar.gz devbox   # ship a local tarball
+```
+
+`hoot @host` (and any other `--remote ssh://…` invocation) auto-installs a
+matching `hoot` on the remote on first connect — no manual bootstrap needed.
+See [`docs/install.md`](docs/install.md) for the full reference.
+
+Building from source: see below.
+
 ## Build
 
 `libghostty-vt` is a Zig library reachable via cgo + pkg-config. Build it
@@ -104,6 +132,9 @@ hoot detach  [--remote <url>] [--state-dir <dir>] [--strict] [<session-prefix>[/
 hoot write   [--remote <url>] [--state-dir <dir>] [--paste] [--input-file FILE]
                   <id-or-prefix> [DATA...]
 hoot serve   [--state-dir <dir>] --bind <host:port|unix:/path.sock> [--prefix /api]
+hoot install-remote [--version vX.Y.Z] [--upload | --from-file <tarball>]
+                  [--install-dir <dir>] <host>
+hoot version
 ```
 
 ### Quick shell
