@@ -7,13 +7,28 @@ import (
 	"time"
 )
 
-// TestRecorderUnderflowAfterResize provokes the bridgeIdleLocked underflow
-// when pendingBucketMs < lastEmittedMs. That ordering arises in production
-// whenever RecordResize lands at a non-bucket-aligned ms (call it R), then
-// the next Write within the same 33ms window has bucket = (now/33)*33 < R.
-// On the subsequent flush, bridgeIdleLocked(bucket) computes bucket -
-// lastEmittedMs in uint64, which underflows to ~2^64 and the spacer loop
-// races to fill the disk at 9 bytes per iteration.
+// Regression tests for the bridgeIdleLocked unsigned-subtraction underflow
+// that produced GB-scale pty.hootty.log accumulation. Two angles, both
+// expressing the same invariant (lastEmittedMs is monotonic, callers must
+// not pass a regressed nowMs):
+//
+//   - TestRecorderUnderflowAfterResize sets up a violated state directly
+//     (lastEmittedMs > pendingBucketMs) and asserts flushPendingLocked
+//     returns promptly without flooding the file.
+//   - TestRecorderResizeWriteFlushRunaway exercises the same shape via
+//     the public API: RecordResize at a non-bucket-aligned ms followed by
+//     a Write inside the same 33ms window, then a Write that triggers a
+//     flush.
+//
+// Bound: flush must complete within flushBudget and the on-disk file must
+// stay under fileBudget. Pre-fix, both budgets were blown by orders of
+// magnitude (multi-MB and 2s+ in the original repro).
+
+const (
+	flushBudget = 200 * time.Millisecond
+	fileBudget  = 4 * 1024 // generous: fits preamble + a handful of frames
+)
+
 func TestRecorderUnderflowAfterResize(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pty.hootty.log")
 	rec, err := NewRecorder(path, 120, 40)
@@ -23,8 +38,10 @@ func TestRecorderUnderflowAfterResize(t *testing.T) {
 
 	// Synthesize the post-resize state directly: lastEmittedMs=1000
 	// (resize at ms=1000), pendingBucketMs=990 (Write at ms~1010,
-	// bucket=990). Set under the recorder mutex to mimic production
-	// flow ordering.
+	// bucket=990). This is the state Write would produce pre-fix; with
+	// the invariant fix in Write, the public API can no longer reach
+	// it, but bridgeIdleLocked's defensive guard must still neutralise
+	// it if a future caller regresses.
 	rec.mu.Lock()
 	rec.lastEmittedMs = 1000
 	rec.pendingHasBucket = true
@@ -32,11 +49,6 @@ func TestRecorderUnderflowAfterResize(t *testing.T) {
 	rec.pendingBuf = []byte("oops")
 	rec.mu.Unlock()
 
-	t.Logf("before flush: lastEmittedMs=%d pendingBucketMs=%d", rec.lastEmittedMs, rec.pendingBucketMs)
-
-	// flushPendingLocked is the suspect path (it calls bridgeIdleLocked
-	// with bucket < lastEmittedMs). Run it under a timeout so a runaway
-	// loop fails the test instead of hanging the suite.
 	done := make(chan error, 1)
 	go func() {
 		rec.mu.Lock()
@@ -46,21 +58,24 @@ func TestRecorderUnderflowAfterResize(t *testing.T) {
 
 	select {
 	case err := <-done:
+		if err != nil {
+			t.Fatalf("flushPendingLocked: %v", err)
+		}
+		fi, statErr := os.Stat(path)
+		if statErr != nil {
+			t.Fatalf("stat: %v", statErr)
+		}
+		if fi.Size() > fileBudget {
+			t.Fatalf("log size %d > budget %d — regression: spacer-loop runaway?",
+				fi.Size(), fileBudget)
+		}
+	case <-time.After(flushBudget):
 		fi, _ := os.Stat(path)
-		t.Logf("flush returned err=%v; log size = %d bytes", err, fi.Size())
-	case <-time.After(2 * time.Second):
-		fi, _ := os.Stat(path)
-		t.Fatalf("flushPendingLocked did not return in 2s; log grew to %d bytes (runaway spacer loop confirmed)", fi.Size())
+		t.Fatalf("flushPendingLocked did not return in %s; log grew to %d bytes — regression: bridgeIdleLocked underflow loop",
+			flushBudget, fi.Size())
 	}
 }
 
-// TestRecorderResizeWriteFlushRunaway exercises the same bug via the
-// Recorder's PUBLIC API — RecordResize at a non-aligned ms, immediately
-// followed by Write within the same 33ms bucket, then a Write into a
-// later bucket to force a flush.
-//
-// To make timing deterministic we rewind rec.started so that nowMs()
-// reads as the values we want.
 func TestRecorderResizeWriteFlushRunaway(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pty.hootty.log")
 	rec, err := NewRecorder(path, 120, 40)
@@ -68,39 +83,47 @@ func TestRecorderResizeWriteFlushRunaway(t *testing.T) {
 		t.Fatalf("NewRecorder: %v", err)
 	}
 
-	// Place "start" 1000ms in the past so the FIRST RecordResize (which
-	// reads nowMs ≈ 1000) lands at a non-bucket-aligned ms.
-	// 1000 % 33 = 10, so bucket of 1000 is 990.
+	// Place "start" 1000ms in the past so the FIRST RecordResize lands
+	// at a non-bucket-aligned nowMs (1000 % 33 == 10; bucket is 990).
 	rec.started = time.Now().Add(-1000 * time.Millisecond)
-
-	// Resize at nowMs ≈ 1000 sets lastEmittedMs = 1000.
 	if err := rec.RecordResize(120, 40); err != nil {
 		t.Fatalf("RecordResize: %v", err)
 	}
 
-	// First Write: nowMs is still in the same bucket as 1000, so
-	// bucket = 990, which is < lastEmittedMs (1000). Pending state
-	// is now pendingBucketMs=990, lastEmittedMs=1000.
+	// First Write: nowMs is in the same 33ms bucket as 1000.
+	// Pre-fix this set pendingBucketMs=990 < lastEmittedMs=1000.
+	// With the Write-side floor it is set to 1000.
 	if _, err := rec.Write([]byte("a")); err != nil {
 		t.Fatalf("Write 1: %v", err)
 	}
 
-	// Bump start back another 50ms so the next Write lands in a
-	// different bucket and triggers a flush of the (990) pending bucket.
+	// Second Write: shift nowMs forward into a different bucket so
+	// flushPendingLocked is triggered. Pre-fix this entered the
+	// runaway spacer loop; post-fix it must return promptly.
 	rec.started = time.Now().Add(-1050 * time.Millisecond)
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := rec.Write([]byte("b"))
-		done <- err
+		_, werr := rec.Write([]byte("b"))
+		done <- werr
 	}()
 
 	select {
-	case err := <-done:
+	case werr := <-done:
+		if werr != nil {
+			t.Fatalf("Write 2: %v", werr)
+		}
+		fi, statErr := os.Stat(path)
+		if statErr != nil {
+			t.Fatalf("stat: %v", statErr)
+		}
+		if fi.Size() > fileBudget {
+			t.Fatalf("log size %d > budget %d — regression: spacer-loop runaway?",
+				fi.Size(), fileBudget)
+		}
+	case <-time.After(flushBudget):
 		fi, _ := os.Stat(path)
-		t.Logf("Write returned err=%v; log size = %d bytes", err, fi.Size())
-	case <-time.After(2 * time.Second):
-		fi, _ := os.Stat(path)
-		t.Fatalf("Write did not return in 2s via public API; log grew to %d bytes — runaway confirmed", fi.Size())
+		t.Fatalf("Write did not return in %s via public API; log grew to %d bytes — regression: lastEmittedMs invariant violated",
+			flushBudget, fi.Size())
 	}
 }
