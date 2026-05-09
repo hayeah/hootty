@@ -295,9 +295,14 @@ def _check_clean_tree():
 
 
 def _check_tag_matches_head(version: str):
-    """HEAD must be at exactly the tag we're releasing."""
+    """HEAD must be at exactly the tag we're releasing.
+
+    `--tags` makes describe consider lightweight tags too. Without it, only
+    annotated tags qualify, and `git tag <name>` (the common form) creates
+    lightweight tags — so the check would falsely reject them.
+    """
     res = subprocess.run(
-        ["git", "describe", "--exact-match", "HEAD"],
+        ["git", "describe", "--tags", "--exact-match", "HEAD"],
         cwd=REPO,
         capture_output=True,
         text=True,
