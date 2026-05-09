@@ -30,10 +30,11 @@ var knownSubcommands = map[string]bool{
 	"clone":     true,
 	"kill":      true,
 	"detach":    true,
-	"write":     true,
-	"serve":     true,
-	"version":   true,
-	"__session": true,
+	"write":          true,
+	"serve":          true,
+	"version":        true,
+	"install-remote": true,
+	"__session":      true,
 	"-h":        true,
 	"--help":    true,
 	"help":      true,
@@ -75,6 +76,8 @@ func main() {
 		err = cmdServe(shellArgs)
 	case "version":
 		err = cmdVersion(shellArgs)
+	case "install-remote":
+		err = cmdInstallRemote(shellArgs)
 	case "__session":
 		err = cmdSession(shellArgs)
 	case "help":
@@ -185,6 +188,9 @@ Usage:
   hoot write   [--remote <url>] [--state-dir <d>] [--paste] [--input-file FILE]
                     <id-or-prefix> [DATA...]
   hoot serve   [--state-dir <d>] --bind <host:port|unix:/path.sock> [--prefix /api]
+  hoot install-remote [--version vX.Y.Z] [--upload | --from-file <tarball>]
+                      [--install-dir <dir>] <host>
+  hoot version
 
 The session state directory is <state-dir>/<key>/. The session
 serves rpc.sock and writes pty.hootty.log inside it. --state-dir
