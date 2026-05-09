@@ -115,7 +115,7 @@ hoot @<host>                         # spawn shell on remote (ssh://<host>), att
 hoot <host>                          # same as @<host> (subcommand fallthrough)
 
 hoot run     [--remote <url>] [--state-dir <dir>] [--key <key>] [--attach]
-                  [--no-reconnect] [--prefix-key <key>]
+                  [--no-reconnect] [--prefix-key <key>] [--no-history]
                   [--cwd <path>] [--env NAME[=VALUE]] [--env-file <path>]
                   -- <cmd> [args...]
 hoot list    [--remote <url>] [--state-dir <dir>] [--json] [--all]
@@ -668,6 +668,15 @@ every terminal-query escape the child ever sent (`DA`, `DSR`, `OSC
 11 ?`, …) which the user's real terminal would dutifully answer back
 into the child's stdin — the same root cause as the live "junk chars
 after tmux detach" symptom, just spread across the whole session.
+
+`hoot run --no-history` opts the session out of scrollback replay
+entirely: every attach still gets the visible-screen snapshot and the
+mode-restore extras (kitty kbd state, alt-screen, etc.), but the
+scrollback frame is sent empty. Useful for long-running sessions
+where minutes of history are noisy or slow to repaint on attach. The
+flag is recorded into `state.json` (`session.no_history`) and applies
+to every attach for the session's lifetime; per-attach override would
+require a `hoot attach --no-history` which is not currently exposed.
 
 Live fanout strips terminal-query escape sequences before sending
 to the user's real terminal (the libghostty emulator on the

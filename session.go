@@ -40,6 +40,12 @@ type SessionConfig struct {
 	CWD      string
 	Service  Service
 	PTY      *LibghosttyPTY
+
+	// NoHistory, when true, makes the attach handler send an empty
+	// MsgSnapshotScrollback frame instead of the libghostty scrollback
+	// bytes. Attaches still receive the visible-screen snapshot and the
+	// extras (kitty kbd state, modes) — only history replay is skipped.
+	NoHistory bool
 }
 
 // Runner is the concrete session entry point. Implements the
@@ -125,6 +131,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			Argv:      append([]string(nil), r.cfg.Argv...),
 			CWD:       r.cfg.CWD,
 			Size:      PTYSize{Cols: cols, Rows: rows},
+			NoHistory: r.cfg.NoHistory,
 		},
 	}
 
@@ -177,7 +184,7 @@ func (r *Runner) registerDefaultRoutes() {
 // the mux. Split out from registerDefaultRoutes because all three
 // need access to the same attachRegistry instance.
 func (r *Runner) registerAttachRoutes() {
-	ah := newAttachHandler(r.cfg.PTY, r.registry)
+	ah := newAttachHandler(r.cfg.PTY, r.registry, r.cfg.NoHistory)
 	r.mux.Handle("/attach", ah)
 	r.mux.HandleFunc("/attachments", r.handleAttachmentsRoot)
 	r.mux.HandleFunc("/attachments/{id}", r.handleAttachmentByID)

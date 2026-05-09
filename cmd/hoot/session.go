@@ -28,6 +28,7 @@ func cmdSession(args []string) error {
 	stateDir := fs.String("state-dir", defaultStateDir(), "session state directory")
 	key := fs.String("key", "", "session key (required)")
 	cwd := fs.String("cwd", "", "original working directory")
+	noHistory := fs.Bool("no-history", false, "skip scrollback replay for new attaches")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -98,12 +99,13 @@ func cmdSession(args []string) error {
 	}
 
 	run := session.New(session.SessionConfig{
-		StateDir: *stateDir,
-		Key:      *key,
-		Argv:     rest,
-		CWD:      *cwd,
-		Service:  svc,
-		PTY:      ptyImpl,
+		StateDir:  *stateDir,
+		Key:       *key,
+		Argv:      rest,
+		CWD:       *cwd,
+		Service:   svc,
+		PTY:       ptyImpl,
+		NoHistory: *noHistory,
 	})
 
 	return run.Run(context.Background())

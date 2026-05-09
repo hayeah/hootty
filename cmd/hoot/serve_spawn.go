@@ -28,11 +28,12 @@ import (
 //	env:  optional one-shot env overrides applied on top of the
 //	      server's environment when forking the session.
 type createSessionReq struct {
-	Cmd  string            `json:"cmd,omitempty"`
-	Argv []string          `json:"argv,omitempty"`
-	Key  string            `json:"key,omitempty"`
-	CWD  string            `json:"cwd,omitempty"`
-	Env  map[string]string `json:"env,omitempty"`
+	Cmd       string            `json:"cmd,omitempty"`
+	Argv      []string          `json:"argv,omitempty"`
+	Key       string            `json:"key,omitempty"`
+	CWD       string            `json:"cwd,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	NoHistory bool              `json:"no_history,omitempty"`
 }
 
 // createSession is POST /sessions. It forks `hoot __session`
@@ -94,6 +95,7 @@ func (s *serveState) createSession(w http.ResponseWriter, r *http.Request) {
 		EnvOverrides: body.Env,
 		Cols:         80,
 		Rows:         24,
+		NoHistory:    body.NoHistory,
 	})
 	if err != nil {
 		http.Error(w, "spawn: "+err.Error(), http.StatusInternalServerError)

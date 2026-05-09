@@ -48,6 +48,7 @@ type SessionState struct {
 	Argv        []string           `json:"argv,omitempty"`
 	CWD         string             `json:"cwd,omitempty"`
 	Size        PTYSize            `json:"size"`
+	NoHistory   bool               `json:"no_history,omitempty"`
 	Attachments []AttachmentRecord `json:"attachments,omitempty"`
 }
 
