@@ -338,6 +338,24 @@ def _check_gh_auth():
         raise SystemExit("release: gh CLI is not authenticated. Run `gh auth login`.")
 
 
+def _check_install_sh_in_sync():
+    """Refuse to release if the curl-pipe install.sh and the embedded copy diverge.
+
+    There are two install.sh files for a load-bearing reason (the curl-pipe
+    URL needs the script at the repo root; //go:embed needs it inside the
+    bootstrap package). A test enforces the same invariant, but checking
+    here too means the release command alone is enough — no separate
+    `go test` run required pre-tag.
+    """
+    root_script = (REPO / "install.sh").read_bytes()
+    pkg_script = (REPO / "internal" / "bootstrap" / "install.sh").read_bytes()
+    if root_script != pkg_script:
+        raise SystemExit(
+            "release: install.sh and internal/bootstrap/install.sh diverge. "
+            "Run: cp install.sh internal/bootstrap/install.sh"
+        )
+
+
 @task()
 def release():
     """Cut a GitHub release for $HOOT_VERSION (must be set, must match HEAD tag)."""
@@ -351,6 +369,7 @@ def release():
     _check_tag_matches_head(HOOT_VERSION)
     _check_release_does_not_exist(HOOT_VERSION)
     _check_gh_auth()
+    _check_install_sh_in_sync()
 
     # The hoot binary embeds Version via -ldflags. If dist/ already has binaries
     # built under a different HOOT_VERSION (e.g. "dev"), we'd ship a binary whose
