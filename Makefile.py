@@ -246,7 +246,13 @@ def _register_tarballs():
         def build(t=t, binary=binary, tarball=tarball, stage=stage, extras=extras):
             for extra in extras:
                 sh(f"cp {extra} {stage}/")
-            sh(f"tar -czf {tarball} -C {stage} .")
+            # --no-mac-metadata strips Apple-specific xattrs (com.apple.provenance,
+            # com.apple.quarantine, etc.) that macOS BSD tar otherwise embeds. GNU tar
+            # on Linux silently warns about them on every file ("Ignoring unknown
+            # extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'"),
+            # which is cosmetic but ugly during the install flow. Stripping yields
+            # a slightly smaller, portable tarball.
+            sh(f"tar --no-mac-metadata -czf {tarball} -C {stage} .")
 
         task.register(
             build,
