@@ -33,6 +33,7 @@ func cmdRun(args []string) error {
 	noReconnect := fs.Bool("no-reconnect", false, "exit on first drop instead of auto-reconnecting during post-spawn attach (--remote only)")
 	prefixSpec := fs.String("prefix-key", "C-^", "command prefix byte for post-spawn attach (e.g. C-^, ^a, 0x1c)")
 	cwdFlag := fs.String("cwd", "", "working directory for the spawned command (default: current directory)")
+	noHistory := fs.Bool("no-history", false, "session default: skip scrollback replay on attach (only restore the visible screen)")
 	var envSpecs stringListFlag
 	var envFiles stringListFlag
 	fs.Var(&envSpecs, "env", "env override NAME or NAME=VALUE (repeatable)")
@@ -70,10 +71,11 @@ func cmdRun(args []string) error {
 	if remote != nil {
 		defer remote.Close()
 		payload, err := json.Marshal(createSessionReq{
-			Argv: rest,
-			Key:  *key,
-			CWD:  *cwdFlag,
-			Env:  envOverrides,
+			Argv:      rest,
+			Key:       *key,
+			CWD:       *cwdFlag,
+			Env:       envOverrides,
+			NoHistory: *noHistory,
 		})
 		if err != nil {
 			return err
@@ -143,6 +145,7 @@ func cmdRun(args []string) error {
 		EnvOverrides: envOverrides,
 		Cols:         cols,
 		Rows:         rows,
+		NoHistory:    *noHistory,
 	}); err != nil {
 		return fmt.Errorf("run: session did not start: %w", err)
 	}

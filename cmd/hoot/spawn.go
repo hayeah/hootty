@@ -18,6 +18,10 @@ type spawnSpec struct {
 	EnvOverrides map[string]string
 	Cols         uint16
 	Rows         uint16
+	// NoHistory: forks `hoot __session --no-history`, which sets
+	// SessionConfig.NoHistory. Persists into state.json and makes the
+	// session's attach handler skip scrollback bytes.
+	NoHistory bool
 }
 
 var hootExecutable = os.Executable
@@ -69,8 +73,11 @@ func spawnSessionFromSpec(stateDir, key string, spec spawnSpec) (string, error) 
 		"--state-dir", absStateDir,
 		"--key", key,
 		"--cwd", spec.CWD,
-		"--",
 	}
+	if spec.NoHistory {
+		hootArgs = append(hootArgs, "--no-history")
+	}
+	hootArgs = append(hootArgs, "--")
 	hootArgs = append(hootArgs, spec.Argv...)
 
 	cmd := exec.Command(self, hootArgs...)

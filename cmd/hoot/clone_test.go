@@ -115,18 +115,20 @@ if [ "$1" != "__session" ]; then
   exit 2
 fi
 shift
+no_history=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --state-dir) state_dir="$2"; shift 2 ;;
     --key) key="$2"; shift 2 ;;
     --cwd) cwd="$2"; shift 2 ;;
+    --no-history) no_history=true; shift ;;
     --) shift; break ;;
     *) echo "unexpected arg: $1" >&2; exit 2 ;;
   esac
 done
 mkdir -p "$state_dir/$key"
 cat > "$state_dir/$key/state.json" <<EOF
-{"session":{"key":"$key","argv":["$1","$2"],"cwd":"$cwd"},"state":{"clone_var":"${CLONE_VAR:-}","run_file_var":"${RUN_FILE_VAR:-}"}}
+{"session":{"key":"$key","argv":["$1","$2"],"cwd":"$cwd","no_history":$no_history},"state":{"clone_var":"${CLONE_VAR:-}","run_file_var":"${RUN_FILE_VAR:-}"}}
 EOF
 : > "$state_dir/$key/rpc.sock"
 `

@@ -25,17 +25,23 @@ import (
 // One handler instance is shared by all attaches; per-attach state
 // lives in the goroutine that runs serveOne.
 type attachHandler struct {
-	pty      *LibghosttyPTY
-	set      *AttachSet
-	registry *attachRegistry
+	pty       *LibghosttyPTY
+	set       *AttachSet
+	registry  *attachRegistry
+	noHistory bool
 }
 
 // newAttachHandler constructs a handler bound to the given PTY. The
 // AttachSet's sizeApplier resizes the PTY's master + emulator (which
 // is the entire point of the multi-attach min-wins negotiation) and
 // also persists the effective size to state.json via the registry.
-func newAttachHandler(pty *LibghosttyPTY, registry *attachRegistry) *attachHandler {
-	h := &attachHandler{pty: pty, registry: registry}
+//
+// noHistory, when true, makes serveOne send an empty
+// MsgSnapshotScrollback frame instead of the libghostty scrollback
+// bytes. The phase marker is preserved so the client's protocol
+// state machine still sees both snapshot frames.
+func newAttachHandler(pty *LibghosttyPTY, registry *attachRegistry, noHistory bool) *attachHandler {
+	h := &attachHandler{pty: pty, registry: registry, noHistory: noHistory}
 	h.set = NewAttachSet(func(cols, rows uint16) {
 		// Don't propagate errors — Resize logs internally. A failed
 		// resize doesn't invalidate the attach.
@@ -229,6 +235,14 @@ func (h *attachHandler) serveOne(conn io.ReadWriteCloser, bufrw *bufio.ReadWrite
 	// the client can place history in local scrollback, clear only the
 	// viewport, then paint the visible screen on a known blank canvas.
 	// Empty frames are intentional phase markers for the client.
+	//
+	// When the session was started with --no-history, the scrollback
+	// frame is still sent (clients use it as a phase marker) but with
+	// an empty payload — saves the bytes over the wire for noisy
+	// long-lived sessions where history replay isn't worth it.
+	if h.noHistory {
+		scrollback = nil
+	}
 	send(attachwire.MsgSnapshotScrollback, scrollback)
 	send(attachwire.MsgSnapshotScreen, screen)
 

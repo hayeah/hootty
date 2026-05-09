@@ -747,5 +747,5 @@ func (p *LibghosttyPTY) RegisterRoutes(mux *http.ServeMux) {
 // using `RegisterRoutes` + `RegisterAttachRoute` without depending
 // on a full session.
 func (p *LibghosttyPTY) RegisterAttachRoute(mux *http.ServeMux) {
-	mux.Handle("/attach", newAttachHandler(p, nil))
+	mux.Handle("/attach", newAttachHandler(p, nil, false))
 }
